@@ -1,0 +1,47 @@
+# .llmignore — v0.1 draft spec (Danielskry)
+# https://github.com/Danielskry/.llmignore
+#
+# Formal access-control for LLM tooling operating in this directory tree.
+# Complements CLAUDE.md §4 destructive-ops list but at the filesystem layer.
+#
+# Precedence: no-access > read-only > default > unmatched
+
+[no-access]
+# Credentials and secrets — never read, indexed, or modified
+*.key
+*.pem
+*.pfx
+.env
+.env.*
+credentials.json
+client_secret*.json
+**/.credentials/
+**/secrets/
+# SOK secrets directory is DPAPI-encrypted but still never LLM-readable
+**/.sok-secrets/
+# Windows Credential Manager exports
+*.credman
+# Backup files may contain plaintext credentials from prior states
+.mcp.json.bak.*
+**/*.bak.*
+
+[read-only]
+# Historical artifacts and deprecated code — may be indexed for context
+# but never modified by LLM tools
+Deprecated/**
+**/*_history.json
+**/*.corrupted_*
+# Completed session artifacts — read to understand continuity, not to edit
+**/Abstract_Oversight_*.md
+**/State_Snapshot_*.md
+# SOK log output
+SOK/Logs/**
+**/_batch-runner.log
+# Raw tool-result files from earlier sessions (LLM may need to Grep these
+# but should never edit)
+~/.claude/projects/**/tool-results/**
+
+[default]
+# Everything else — LLM tools operate with conservative judgment and
+# require explicit user approval for destructive modifications per
+# CLAUDE.md §4

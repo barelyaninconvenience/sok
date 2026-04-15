@@ -1,0 +1,36 @@
+# Clay Voice — Configuration
+# Copy to config.local.yaml and fill in your keys (config.local.yaml is gitignored)
+
+# API Keys (set via environment variables or fill in config.local.yaml)
+anthropic_api_key: ${ANTHROPIC_API_KEY}
+picovoice_access_key: ${PICOVOICE_ACCESS_KEY}  # Only if using Porcupine wake word
+
+# Paths
+claude_memory_dir: "C:/Users/shelc/.claude/projects/C--Users-shelc/memory"
+session_transcripts_dir: "C:/Users/shelc/Documents/Journal/Projects/ML"
+database_path: "data/conversations.db"
+whisper_model: "large-v3"  # Options: tiny, base, small, medium, large-v3
+piper_model: "en_US-amy-medium"  # See: https://rhasspy.github.io/piper-samples/
+
+# Wake Word
+wake_word_engine: "porcupine"  # "porcupine" or "openwakeword"
+wake_word_model: "models/hey-claude_windows.ppn"  # Porcupine custom model path
+# wake_word_model: "hey_jarvis"  # openWakeWord preset
+
+# Voice Agent Behavior
+model: "claude-sonnet-4-6"  # Default model for voice conversations
+model_complex: "claude-opus-4-6"  # For complex/research questions
+max_response_words: 75  # Keep spoken responses concise (~30 sec)
+max_context_turns: 10  # How many recent turns to include
+max_memory_results: 5  # How many past conversations to retrieve
+memory_refresh_interval: 1800  # Reload Claude memory files every 30 min (seconds)
+
+# Audio
+sample_rate: 16000
+silence_threshold: 500  # ms of silence before end-of-utterance
+input_device: null  # null = system default microphone
+output_device: null  # null = system default speaker
+
+# Speaker Detection (future)
+jaz_mode_keyword: "jaz mode"  # Say this to switch to Jaz-friendly responses
+clay_mode_keyword: "clay mode"  # Switch back
