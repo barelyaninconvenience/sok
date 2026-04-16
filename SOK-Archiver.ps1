@@ -49,12 +49,22 @@ param(
 
     [string]$BaseName = 'SOK_Archive',
 
-    [string]$OutputDir = "$env:USERPROFILE\Documents\SOK\Logs\Archives",
+    [string]$OutputDir = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Logs\Archives",
 
     [string]$Extensions = '(?i)\.(txt|md|ps1|psm1|psd1|py|json|log|yaml|yml|xml|conf|ini|sh|bat|css|js|jsx|ts|tsx|sql|toml|cfg|r|go|rs)$',
 
     [switch]$DryRun
 )
+
+# ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# When running as SYSTEM (scheduled tasks), $env:USERPROFILE resolves to
+# C:\Windows\System32\config\systemprofile — remap to actual user profile
+if ($env:USERPROFILE -like '*systemprofile*') {
+    $actualProfile = 'C:\Users\shelc'
+    $SourceFolders = $SourceFolders | ForEach-Object { $_ -replace [regex]::Escape($env:USERPROFILE), $actualProfile }
+    $OutputDir = $OutputDir -replace [regex]::Escape($env:USERPROFILE), $actualProfile
+    Write-Host "[SYSTEM-CONTEXT] Remapped paths from $env:USERPROFILE to $actualProfile"
+}
 
 # Import SOK-Common
 $modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'
@@ -116,8 +126,8 @@ Write-Progress -Activity "SOK Archiver" -Completed
 # Exclude previous archives and sort deterministically
 $manifest = $manifest | Where-Object { $_.Name -notmatch $BaseName } | Sort-Object FullName
 
-$totalSizeMB = [math]::Round(($manifest | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
-Write-SOKLog "Manifest: $($manifest.Count) files, $totalSizeMB MB" -Level Success
+$totalSizeKB = [math]::Round(($manifest | Measure-Object -Property Length -Sum).Sum / 1KB, 2)
+Write-SOKLog "Manifest: $($manifest.Count) files, $totalSizeKB KB" -Level Success
 
 if ($manifest.Count -eq 0) {
     Write-SOKLog 'No matching files found. Aborting.' -Level Error
@@ -125,7 +135,7 @@ if ($manifest.Count -eq 0) {
 }
 
 if ($DryRun) {
-    Write-SOKLog "`nDRY RUN — would archive $($manifest.Count) files ($totalSizeMB MB) to $targetFile" -Level Warn
+    Write-SOKLog "`nDRY RUN — would archive $($manifest.Count) files ($totalSizeKB KB) to $targetFile" -Level Warn
     foreach ($item in $manifest | Select-Object -First 20) {
         Write-SOKLog "  $($item.FullName) ($("$([math]::Round($item.Length / 1KB, 2)) KB"))" -Level Debug
     }
@@ -148,7 +158,7 @@ try {
     $writer.WriteLine("# SOK ARCHIVE SNAPSHOT: v$version")
     $writer.WriteLine("# DATE: $(Get-Date -Format 'ddMMMyyyy HH:mm:ss')")
     $writer.WriteLine("# TOTAL FILES: $($manifest.Count)")
-    $writer.WriteLine("# TOTAL SIZE: $totalSizeMB MB")
+    $writer.WriteLine("# TOTAL SIZE: $totalSizeKB KB")
     $writer.WriteLine("# SOURCES: $($SourceFolders -join ' | ')")
     $writer.WriteLine("# " + ("=" * 111))
 

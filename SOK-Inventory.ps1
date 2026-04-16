@@ -67,6 +67,15 @@ $startTime = Get-Date
 if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
     Invoke-SOKPrerequisite -CallingScript 'SOK-Inventory'
 }
+
+# ── SYSTEM-CONTEXT PATH RESOLUTION ──
+if ($env:USERPROFILE -like '*systemprofile*') {
+    $env:USERPROFILE  = 'C:\Users\shelc'
+    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
+    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
+    Write-SOKLog '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+}
+
 $errors = [System.Collections.ArrayList]::new()
 $warnings = [System.Collections.ArrayList]::new()
 

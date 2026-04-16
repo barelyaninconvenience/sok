@@ -88,6 +88,17 @@ if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
 
 if ($DryRun) { Write-SOKLog '*** DRY RUN — no files will be moved ***' -Level Warn }
 
+# ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# When running as SYSTEM (scheduled tasks), profile env vars resolve to
+# C:\Windows\System32\config\systemprofile — remap to actual user profile
+if ($env:USERPROFILE -like '*systemprofile*') {
+    $actualProfile = 'C:\Users\shelc'
+    $env:USERPROFILE   = $actualProfile
+    $env:LOCALAPPDATA  = "$actualProfile\AppData\Local"
+    $env:APPDATA       = "$actualProfile\AppData\Roaming"
+    Write-SOKLog "[SYSTEM-CONTEXT] Remapped profile env vars to $actualProfile" -Level Warn
+}
+
 # ═══════════════════════════════════════════════════════════════
 # COMPILED REGEX PATTERNS (built once, matched many times)
 # ═══════════════════════════════════════════════════════════════

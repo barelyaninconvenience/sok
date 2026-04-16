@@ -28,6 +28,17 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+
+# ── SYSTEM-CONTEXT PATH RESOLUTION ──
+if ($env:USERPROFILE -like '*systemprofile*') {
+    $actualProfile = 'C:\Users\shelc'
+    $OutJson  = $OutJson  -replace [regex]::Escape($env:USERPROFILE), $actualProfile
+    $ErrorLog = $ErrorLog -replace [regex]::Escape($env:USERPROFILE), $actualProfile
+    $env:USERPROFILE  = $actualProfile
+    $env:LOCALAPPDATA = "$actualProfile\AppData\Local"
+    $env:APPDATA      = "$actualProfile\AppData\Roaming"
+}
+
 $startTime = Get-Date
 
 # Import Common module

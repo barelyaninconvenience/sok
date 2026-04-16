@@ -110,10 +110,12 @@ $Tests = @(
 
     # ── META: PAST ────────────────────────────────────────────────────────────
     @{
-        Group  = 'Meta-PAST'
-        Script = 'SOK-PAST.ps1'
-        Args   = @('-DryRun', '-All')
-        Note   = 'All 6 PAST modules in DryRun. No disk mutations.'
+        Group      = 'Meta-PAST'
+        Script     = 'SOK-PAST.ps1'
+        Args       = @('-DryRun', '-All')
+        Slow       = $true
+        TimeoutSec = 3600
+        Note       = '[SLOW] All 6 PAST modules in DryRun. No disk mutations. PAST internally runs SpaceAudit which scans 317K dirs on C:\ — budget 60 min. Batches #1 and #2 appeared fast (~4s) only because a missing prerequisite was silently short-circuiting SpaceAudit; the 2026-04-14 canonical-path cleanup restored the prerequisite and now SpaceAudit runs for real.'
     }
     @{
         Group      = 'Meta-PAST'
@@ -180,8 +182,8 @@ $Tests = @(
         Script     = 'SOK-SpaceAudit.ps1'
         Args       = @('-DryRun')
         Slow       = $true
-        TimeoutSec = 2100
-        Note       = '[SLOW] Read-only full C:\ scan. 727GB / 317K dirs legitimately takes ~16-20 min; budget 35 min to be safe.'
+        TimeoutSec = 3600
+        Note       = '[SLOW] Read-only full C:\ scan. 727GB / 317K dirs. 2100s proved insufficient under system load (batch #2 timed out); budget 60 min.'
     }
     @{
         Group  = 'PAST-Tactical'
@@ -291,14 +293,15 @@ $Tests = @(
         Group      = 'Utility'
         Script     = 'Export-SoftwareManifest.ps1'
         Args       = @('-DryRun', '-SkipSlowSources')
-        TimeoutSec = 900
-        Note       = 'DryRun: lists sources only, no Markdown written. -SkipSlowSources skips Winget+Store. pip 3.14 query can still be slow.'
+        TimeoutSec = 1800
+        Note       = 'DryRun: lists sources only, no Markdown written. -SkipSlowSources skips Winget+Store. pip 3.14 query can hang 10+ min; budget 30 min.'
     }
     @{
         Group  = 'Utility'
         Script = 'Install-GitHubRelease.ps1'
         Args   = @('-DryRun', '-ScanInventory')
         Note   = 'ScanInventory mode: cross-references installed tools vs GitHub sources. No downloads.'
+        Slow   = $true  # Scoop manifest scan + inventory cross-ref takes 5-10 min
     }
     @{
         Group  = 'Utility'

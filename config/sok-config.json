@@ -6,24 +6,53 @@
   "_note_errors": "All ErrorAction is Continue. Every error surfaces to console and log. No silent swallowing.",
   "_note_wsl": "WSL automation permanently disabled after 5 failed implementation attempts (TITAN v4.0→SOK v2.0). apt hangs from dpkg locks, unattended-upgrades contention, and WSL2 networking drops. Update WSL packages manually in a WSL terminal.",
 
-  "LogDirectory": "C:\\Users\\shelc\\Documents\\SOK\\Logs",
-  "HistoryPath": "C:\\Users\\shelc\\Documents\\SOK\\sok-history.json",
+  "_note_paths": "LogDirectory and HistoryPath are currently DEAD CONFIG — SOK-Common.psm1 line 64-69 hardcodes $script:ProjectRoot and derives paths from it, ignoring these values. Kept in sync with canonical paths for hygiene.",
+  "LogDirectory": "C:\\Users\\shelc\\Documents\\Journal\\Projects\\SOK\\Logs",
+  "HistoryPath": "C:\\Users\\shelc\\Documents\\Journal\\Projects\\SOK\\sok-history.json",
   "MaxLogAgeDays": 30,
 
   "ProcessOptimizer": {
     "MemoryThresholdMB": 500,
     "CPUThresholdPercent": 80,
     "AggressionMode": "Balanced",
-    "_note_modes": "Conservative = telemetry+updaters+crashreporters only | Balanced = +idle background+cloud sync+AppData | Aggressive = everything non-protected",
+    "_note_modes": "Conservative = telemetry+updaters+crashreporters only | Balanced = +idle background+cloud sync+AppData+BloatProcess | Aggressive = everything non-protected including UserProcess",
+    "_note_v1_1_0": "v1.1.0 added BloatProcesses list (name-match, window-independent). Edit this list to curate which consumer apps + daemons get killed on optimizer runs. Anything in ProtectedProcesses is still protected regardless (takes precedence).",
     "ProtectedProcesses": [
       "explorer", "svchost", "csrss", "wininit", "winlogon",
       "lsass", "services", "smss", "dwm", "taskhostw",
       "RuntimeBroker", "SecurityHealthService", "SearchHost",
       "MsMpEng", "NisSrv", "WmiPrvSE",
       "Code", "pwsh", "powershell", "WindowsTerminal", "conhost",
+      "claude", "node", "bash",
+      "ProcessLasso", "processgovernor", "ProcessGovernor",
       "neo4j", "mongod", "mysqld", "postgres", "redis-server",
-      "tailscaled", "docker", "dockerd",
-      "audiodg", "WavesSysSvc64", "WavesSvc64"
+      "docker", "dockerd",
+      "audiodg"
+    ],
+    "BloatProcesses": [
+      "chrome", "msedge", "firefox", "brave",
+      "discord", "Discord", "DiscordCanary",
+      "Teams", "ms-teams", "msteams",
+      "slack",
+      "Spotify", "SpotifyWebHelper",
+      "Signal",
+      "Telegram",
+      "WhatsApp",
+      "Notion",
+      "figma_agent", "Figma",
+      "PowerToys", "PowerToys.PowerLauncher", "PowerToys.CmdPal", "Microsoft.CmdPal.UI",
+      "launchy", "Listary", "fnp",
+      "ProcessLasso", "processgovernor",
+      "SteelSeriesGG", "SteelSeries GG", "SteelEngine",
+      "telegraf", "tailscaled", "tailscale",
+      "netbird", "netbird-ui",
+      "squid",
+      "msedgewebview2",
+      "networx",
+      "Foxit PDF Reader", "FoxitPDFReaderUpdateService",
+      "PhoneExperienceHost",
+      "GWCrashpadHandler",
+      "updatesvc"
     ]
   },
 

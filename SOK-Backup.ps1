@@ -36,6 +36,13 @@ param(
     [switch]$DryRun
 )
 
+# ── SYSTEM-CONTEXT PATH RESOLUTION ──
+if ($env:USERPROFILE -like '*systemprofile*') {
+    $actualProfile = 'C:\Users\shelc'
+    $Sources = $Sources | ForEach-Object { $_ -replace [regex]::Escape($env:USERPROFILE), $actualProfile }
+    Write-Host "[SYSTEM-CONTEXT] Remapped Sources from $env:USERPROFILE to $actualProfile"
+}
+
 $ErrorActionPreference = 'Continue'
 $modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'
 if (-not (Test-Path $modulePath)) { $modulePath = 'C:\Users\shelc\Documents\Journal\Projects\scripts\common\SOK-Common.psm1' }

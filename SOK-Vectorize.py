@@ -239,7 +239,7 @@ def search_chunks(chunks_path: Path, query: str, top_n: int = 5) -> None:
         print(f'No results for: {query}')
         return
 
-    print(f'\n── Search: "{query}" — top {len(results)} results ──\n')
+    print(f'\n-- Search: "{query}" -- top {len(results)} results --\n')
     for score, chunk in results:
         print(f'  [{score} hits] {chunk["source"]}  lines {chunk["line_start"]}-{chunk["line_end"]}  (chunk {chunk["chunk_idx"]+1}/{chunk["total_chunks"]})')
         # Print first 300 chars of content with matching terms highlighted
@@ -452,10 +452,9 @@ def main() -> None:
         search_chunks(output_dir / 'chunks.jsonl', args.search, args.top)
         return
 
-    # Override globals if CLI params differ
-    global CHUNK_CHARS, OVERLAP_CHARS
-    CHUNK_CHARS   = args.chunk_chars
-    OVERLAP_CHARS = args.overlap
+    # Update module-level chunk params if CLI overrides were given
+    globals()['CHUNK_CHARS']   = args.chunk_chars
+    globals()['OVERLAP_CHARS'] = args.overlap
 
     run(
         project_root = project_root,

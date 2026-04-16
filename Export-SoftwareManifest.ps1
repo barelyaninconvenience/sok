@@ -74,10 +74,26 @@ function Add-Section { param([string]$Content) $sections.Add($Content) }
 function Err { param([string]$msg) $errors.Add($msg); Write-SOKLog $msg -Level Warn }
 
 function Run-Cmd {
-    param([string]$Cmd, [string[]]$Args, [int]$TimeoutSec = 60)
+    param([string]$Cmd, [string[]]$CmdArgs, [int]$TimeoutSec = 60)
     try {
-        $result = & $Cmd @Args 2>&1
-        return $result
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $Cmd
+        $psi.Arguments = ($CmdArgs | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $stdout = $proc.StandardOutput.ReadToEndAsync()
+        $stderr = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            $proc.Kill()
+            Err "Command timed out after ${TimeoutSec}s: $Cmd $($Args -join ' ')"
+            return $null
+        }
+        [System.Threading.Tasks.Task]::WaitAll(@($stdout, $stderr))
+        $output = $stdout.Result -split '\r?\n' | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ -match '\S' }
+        return $output
     } catch {
         Err "Command failed: $Cmd $($Args -join ' ') — $_"
         return $null
@@ -95,7 +111,7 @@ function Wrap-Table {
 Write-SOKLog 'Querying Chocolatey...' -Level Ignore
 $chocoSection = "## Chocolatey`n"
 if (Get-Command choco -ErrorAction SilentlyContinue) {
-    $chocoList = Run-Cmd 'choco' @('list', '--local-only', '--no-color', '-r')
+    $chocoList = Run-Cmd 'choco' @('list', '--no-color', '-r')
     if ($chocoList) {
         $rows = $chocoList | Where-Object { $_ -match '\|' } |
             ForEach-Object { $p = $_ -split '\|'; "| $($p[0]) | $($p[1]) |" }

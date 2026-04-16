@@ -99,6 +99,16 @@ if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
     Invoke-SOKPrerequisite -CallingScript 'SOK-SpaceAudit'
 }
 
+# ── SYSTEM-CONTEXT PATH RESOLUTION ──
+if ($env:USERPROFILE -like '*systemprofile*') {
+    $env:USERPROFILE  = 'C:\Users\shelc'
+    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
+    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
+    if (Get-Command Write-SOKLog -ErrorAction SilentlyContinue) {
+        Write-SOKLog '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+    }
+}
+
 if (-not $OutputDir) {
     $OutputDir = if (Get-Command Get-ScriptLogDir -ErrorAction SilentlyContinue) { Get-ScriptLogDir -ScriptName 'SOK-SpaceAudit' } else { Join-Path $env:USERPROFILE 'Documents\SOK\Audit' }
 }

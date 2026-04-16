@@ -24,9 +24,16 @@
 
 .NOTES
     Author:  S. Clay Caddell
-    Version: 1.0.0
-    Date:    2026-04-14
+    Version: 1.0.2
+    Date:    2026-04-14 (v1.0.0 initial), 2026-04-15 (v1.0.2 trailing-newline fix)
     Domain:  Universal — called by every SOK script that handles credentials
+    Changelog:
+      1.0.2 — Set-SOKSecret uses -NoNewline; Get-SOKSecret .Trim()s content before
+              ConvertTo-SecureString. Fixes 'input string was not in a correct format'
+              on roundtrip when stored file has trailing \r\n (CRLF added by Set-Content
+              default behavior on Windows). Discovered during Task #3 DPAPI migration
+              of Google OAuth creds 2026-04-15 overnight.
+      1.0.0 — Initial module.
 #>
 
 $script:SecretsDir = Join-Path $env:USERPROFILE '.sok-secrets'
@@ -71,7 +78,8 @@ function Set-SOKSecret {
     $encrypted = ConvertFrom-SecureString -SecureString $Value
 
     $path = Join-Path $script:SecretsDir "$Name.sec"
-    Set-Content -Path $path -Value $encrypted -Encoding utf8 -Force
+    # -NoNewline is critical: ConvertTo-SecureString rejects trailing CRLF on retrieve
+    Set-Content -Path $path -Value $encrypted -Encoding utf8 -Force -NoNewline
 
     # Restrict file ACL to current user
     $acl = Get-Acl $path
@@ -110,7 +118,9 @@ function Get-SOKSecret {
         return $null
     }
 
-    $encrypted = Get-Content $path -Raw
+    # .Trim() handles files written by v1.0.0 (which left trailing CRLF);
+    # v1.0.2+ writes -NoNewline so this is a cheap no-op on new files.
+    $encrypted = (Get-Content $path -Raw).Trim()
     $secure = ConvertTo-SecureString -String $encrypted
 
     if ($AsSecureString) {

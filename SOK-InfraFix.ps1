@@ -35,6 +35,14 @@ function Log { param([string]$Msg, [string]$Level = 'Ignore')
 Write-Host "`n━━━ SOK INFRASTRUCTURE FIX ━━━" -ForegroundColor Cyan
 if ($DryRun) { Log 'DRY RUN — no changes' -Level Warn }
 
+# ── SYSTEM-CONTEXT PATH RESOLUTION ──
+if ($env:USERPROFILE -like '*systemprofile*') {
+    $env:USERPROFILE  = 'C:\Users\shelc'
+    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
+    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
+    Log '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+}
+
 $fixed = 0; $skipped = 0; $failed = 0
 
 # ═══════════════════════════════════════════════════
@@ -195,6 +203,67 @@ if ($altairInPath) {
     $skipped++
 } else {
     Log "  Altair MF not in PATH — no PATH ordering risk" -Level Success; $skipped++
+}
+
+# ════════════════════════════════════════════��══════
+# 6. Scoop shim availability check
+#    Scoop installs apps to ~/scoop/apps/ but shims may be missing
+#    if scoop was installed or updated in an unusual way.
+# ═══════════════════════════════════════════════════
+Log '6. Scoop shim availability' -Level Section
+$scoopAppsDir = Join-Path $env:USERPROFILE 'scoop\apps'
+$scoopShimsDir = Join-Path $env:USERPROFILE 'scoop\shims'
+if (Test-Path $scoopAppsDir) {
+    $scoopCmd = Join-Path $scoopShimsDir 'scoop.ps1'
+    if (-not (Test-Path $scoopCmd)) {
+        $scoopExe = Join-Path $env:USERPROFILE 'scoop\apps\scoop\current\bin\scoop.ps1'
+        if (Test-Path $scoopExe) {
+            Log "  Scoop apps present but shim missing at $scoopCmd" -Level Warn
+            Log "  Fix: run 'Invoke-Expression (New-Object Net.WebClient).DownloadString(''https://get.scoop.sh'')' to repair" -Level Warn
+            $failed++
+        } else {
+            Log "  Scoop apps dir exists but scoop binary not found — broken install" -Level Error; $failed++
+        }
+    } else {
+        Log "  Scoop shim OK: $scoopCmd" -Level Success; $skipped++
+    }
+} else {
+    Log "  Scoop not installed (no ~/scoop/apps/)" -Level Success; $skipped++
+}
+
+# ═══════════════════════════════════════════════════
+# 7. Choco shim integrity (detect shims pointing to missing targets)
+#    Choco shims are .exe stubs at C:\ProgramData\chocolatey\bin\
+#    that redirect to the real executable. If the target is uninstalled
+#    or moved, the shim errors with "Cannot find file at..."
+# ═══════════════════════════════════════════════════
+Log '7. Choco shim integrity spot-check' -Level Section
+$chocoShimsDir = 'C:\ProgramData\chocolatey\bin'
+if (Test-Path $chocoShimsDir) {
+    $brokenShims = @()
+    # Check the most common shims for broken targets
+    $shimCheckList = @('pandoc.exe', 'node.exe', 'python.exe', 'ruby.exe')
+    foreach ($shimName in $shimCheckList) {
+        $shimPath = Join-Path $chocoShimsDir $shimName
+        $shimGui = Join-Path $chocoShimsDir "$($shimName -replace '\.exe$', '.gui')"
+        if (Test-Path $shimPath) {
+            # Try to invoke with --version to test if target exists
+            $result = try { & $shimPath --version 2>&1 | Select-Object -First 1; $true } catch { $false }
+            if (-not $result -or ($result -is [System.Management.Automation.ErrorRecord])) {
+                Log "  BROKEN shim: $shimName (target missing or error)" -Level Warn
+                $brokenShims += $shimName
+            }
+        }
+    }
+    if ($brokenShims.Count -gt 0) {
+        Log "  $($brokenShims.Count) broken shim(s) detected: $($brokenShims -join ', ')" -Level Warn
+        Log "  Fix: choco uninstall <package> or verify target paths" -Level Warn
+        $failed += $brokenShims.Count
+    } else {
+        Log "  Checked $($shimCheckList.Count) common shims — all OK or absent" -Level Success; $skipped++
+    }
+} else {
+    Log "  Chocolatey not installed (no bin dir)" -Level Success; $skipped++
 }
 
 # ═══════════════════════════════════════════════════

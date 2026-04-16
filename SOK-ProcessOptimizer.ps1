@@ -21,16 +21,39 @@
 
 .NOTES
     Author: S. Clay Caddell
-    Version: 1.0.0 (SOK canonical)
-    Date: March 2026
+    Version: 1.1.1 (SOK canonical)
+    Date: March 2026 (v1.0.0); 2026-04-15 (v1.1.0 post-audit fixes, v1.1.1 auditor-agent fixes)
     Domain: PRESENT — categorizes and reclaims active process resources; mode-driven aggression
+    Changelog:
+      1.1.1 — Fixes from auditor-agent second-pair-of-eyes review (Agent_Architecture_First_Validation_20260415.md):
+              (d) BloatProcess check MOVED to run BEFORE the regex heuristic rules
+                  (DevTool, Shell, Security, AudioVideo). Config beats heuristics.
+                  Previously a bloat app matching DevTool regex would survive.
+              (e) DevTool regex hardened: 'node', 'cmd', 'conhost', 'bash' REMOVED
+                  from window-independent protection. Only pwsh/powershell/claude/
+                  windowsterminal/code/idea/pycharm/rider/datagrip/postman/dbeaver
+                  are protected regardless of window. The removed names were
+                  immortalizing every Electron app (Discord/Slack/Teams/etc ship as
+                  node.exe children) and every backgrounded cmd.exe shell-out.
+              (f) Config reader for BloatProcesses + ProtectedProcesses hardened:
+                  force array via @(...), drop nulls, coerce to string. Handles
+                  missing key, empty array, or scalar-instead-of-array.
+              (g) $DryRun moved to first parameter per CLAUDE.md §2 (mandatory).
+      1.1.0 — Post-audit fixes per writings/SOK_ProcessOptimizer_Audit_20260415.md:
+              (a) Add BloatProcess category + $config.ProcessOptimizer.BloatProcesses
+                  config reader. BloatProcess in Balanced and Aggressive kill tiers.
+              (b) Drop $hasWindow requirement on DevTool rule [BUG: too broad in v1.1.0,
+                  narrowed in v1.1.1].
+              (c) Remove dead v4.3.2 filter.
+      1.0.0 — Initial SOK canonical.
 #>
 
 [CmdletBinding()]
 param(
+    # v1.1.1: DryRun moved to first parameter per CLAUDE.md §2 "DryRun is Mandatory".
+    [switch]$DryRun,
     [ValidateSet('Conservative', 'Balanced', 'Aggressive')]
-    [string]$Mode = 'Balanced',
-    [switch]$DryRun
+    [string]$Mode = 'Balanced'
 )
 
 #Requires -Version 7.0
@@ -61,21 +84,36 @@ if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
 }
 
 # Protected process list from config (normalized to lowercase)
-$configProtected = if ($config.ProcessOptimizer.ProtectedProcesses) { @($config.ProcessOptimizer.ProtectedProcesses | ForEach-Object { $_.ToLower() }) } else { @() }
+# v1.1.1: hardened against missing key, empty array, and scalar-instead-of-array.
+$configProtected = @($config.ProcessOptimizer.ProtectedProcesses) |
+    Where-Object { $_ } |
+    ForEach-Object { $_.ToString().ToLower() }
+if ($null -eq $configProtected) { $configProtected = @() }
 
 # ═══════════════════════════════════════════════════════════════
 # CATEGORIZATION ENGINE
 # ═══════════════════════════════════════════════════════════════
 
 # Kill tiers by mode
+# v1.1.0: BloatProcess added to Balanced and Aggressive — catches configured
+# consumer apps (chrome, discord, slack, spotify, ms-teams, etc.) that used to
+# land in Uncategorized regardless of window state.
 $killTiers = @{
     Conservative = @('Telemetry', 'Updater', 'CrashReporter')
     Balanced     = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync',
-                     'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground')
+                     'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground',
+                     'BloatProcess')
     Aggressive   = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync',
                      'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground',
-                     'UserProcess')
+                     'BloatProcess', 'UserProcess')
 }
+
+# v1.1.0: Bloat process list from config (normalized to lowercase)
+# v1.1.1: hardened against missing key, empty array, and scalar-instead-of-array.
+$configBloat = @($config.ProcessOptimizer.BloatProcesses) |
+    Where-Object { $_ } |
+    ForEach-Object { $_.ToString().ToLower() }
+if ($null -eq $configBloat) { $configBloat = @() }
 
 $activeTier = $killTiers[$Mode]
 
@@ -94,6 +132,13 @@ function Get-ProcessCategory {
     # Config-protected
     if ($nameLower -in $configProtected) {
         return @{ Category = 'ConfigProtected'; Reason = "Protected in sok-config.json" }
+    }
+
+    # v1.1.1: BloatProcess check moved HERE — config beats heuristics. Previously ran
+    # after DevTool/Shell/AudioVideo, meaning a bloat app whose name matched any earlier
+    # rule would survive (especially lethal with 'node' in the old DevTool regex).
+    if ($nameLower -in $configBloat) {
+        return @{ Category = 'BloatProcess'; Reason = "Bloat app (configured): $name" }
     }
 
     try {
@@ -132,9 +177,16 @@ function Get-ProcessCategory {
             return @{ Category = 'Shell'; Reason = 'Windows shell' }
         }
 
-        # Development tools with active windows — NEVER kill
-        if ($hasWindow -and $nameLower -match '(?i)^(code|pwsh|powershell|windowsterminal|cmd|conhost|idea|pycharm|rider|datagrip|postman|dbeaver)') {
-            return @{ Category = 'DevTool'; Reason = "Active dev tool: $name" }
+        # Development tools — NEVER kill (v1.1.1: narrowed)
+        # v1.1.0 dropped $hasWindow for ALL dev tool names to protect headless pwsh
+        # automation. v1.1.1 narrows the window-independent list: only pwsh/powershell/
+        # claude/windowsterminal/code/idea/pycharm/rider/datagrip/postman/dbeaver get
+        # unconditional protection. 'node', 'cmd', 'conhost', 'bash' REMOVED — 'node'
+        # because Electron apps (Discord/Slack/Teams/etc) ship as node.exe or helpers
+        # and were immortalizing every consumer app; 'cmd'/'conhost'/'bash' because
+        # incidental shell-outs shouldn't gain dev-tool immortality.
+        if ($nameLower -match '(?i)^(code|pwsh|powershell|windowsterminal|claude|idea|pycharm|rider|datagrip|postman|dbeaver)$') {
+            return @{ Category = 'DevTool'; Reason = "Dev tool: $name" }
         }
 
         # === KILLABLE CATEGORIES ===
@@ -208,12 +260,12 @@ foreach ($proc in $allProcs) {
     $catName = $cat.Category
 
     if (-not $categoryStats.ContainsKey($catName)) {
-        $categoryStats[$catName] = @{ Count = 0; Kill = 0; Protect = 0; MemMB = 0 }
+        $categoryStats[$catName] = @{ Count = 0; Kill = 0; Protect = 0; MemKB = 0 }
     }
     $categoryStats[$catName].Count++
 
-    $memMB = try { [math]::Round($proc.WorkingSet64 / 1MB, 0) } catch { 0 }
-    $categoryStats[$catName].MemMB += $memMB
+    $memKB = try { [math]::Round($proc.WorkingSet64 / 1KB, 0) } catch { 0 }
+    $categoryStats[$catName].MemKB += $memKB
 
     $shouldKill = $catName -in $activeTier
 
@@ -224,7 +276,7 @@ foreach ($proc in $allProcs) {
             PID      = $proc.Id
             Category = $catName
             Reason   = $cat.Reason
-            MemMB    = $memMB
+            MemKB    = $memKB
         }) | Out-Null
         $categoryStats[$catName].Kill++
     }
@@ -242,20 +294,18 @@ foreach ($cat in $categoryStats.Keys | Sort-Object) {
     $killLabel = if ($s.Kill -gt 0) { " KILL:$($s.Kill)" } else { '' }
     $protLabel = if ($s.Protect -gt 0) { " KEEP:$($s.Protect)" } else { '' }
     $level = if ($s.Kill -gt 0) { 'Warn' } else { 'Ignore' }
-    Write-SOKLog "  $($cat.PadRight(21)) Total:$($s.Count.ToString().PadLeft(5))  Mem:$($s.MemMB.ToString().PadLeft(8)) MB$killLabel$protLabel" -Level $level
+    Write-SOKLog "  $($cat.PadRight(21)) Total:$($s.Count.ToString().PadLeft(5))  Mem:$($s.MemKB.ToString().PadLeft(10)) KB$killLabel$protLabel" -Level $level
 }
 
-$totalReclaimMB = ($toKill | Measure-Object -Property MemMB -Sum).Sum
-Write-SOKLog "`nTargeted: $($toKill.Count) processes (~$totalReclaimMB MB)" -Level Warn
+$totalReclaimKB = ($toKill | Measure-Object -Property MemKB -Sum).Sum
+Write-SOKLog "`nTargeted: $($toKill.Count) processes (~$totalReclaimKB KB)" -Level Warn
 Write-SOKLog "Protected: $($protected.Count) processes" -Level Success
 
-# v4.3.2: ACTUAL kill exclusion — filter ProtectedProcesses from kill list
-$protNames = @($config.ProtectedProcesses | ForEach-Object { $_.ToLower() })
-$beforeFilter = $toKill.Count
-$toKill = [System.Collections.ArrayList]@($toKill | Where-Object { $_.Name.ToLower() -notin $protNames })
-if ($toKill.Count -lt $beforeFilter) {
-    Write-SOKLog "Filtered: $($beforeFilter - $toKill.Count) config-protected processes removed from kill list" -Level Annotate
-}
+# v1.1.0: the v4.3.2 "ACTUAL kill exclusion" filter was deleted here. It read
+# $config.ProtectedProcesses (top-level) instead of $config.ProcessOptimizer.ProtectedProcesses,
+# making $protNames empty — it was a no-op filter. Even with the correct key path,
+# it was redundant: categorization at line 95-97 already routes protected processes
+# into ConfigProtected, which is never in any kill tier. Dead code, removed.
 
 # ═══════════════════════════════════════════════════════════════
 # TERMINATION PASS
@@ -268,8 +318,8 @@ elseif ($DryRun) {
     $grouped = $toKill | Group-Object -Property Category | Sort-Object Count -Descending
     foreach ($group in $grouped) {
         Write-SOKLog "  [$($group.Name)] — $($group.Count) processes" -Level Warn
-        foreach ($item in ($group.Group | Sort-Object MemMB -Descending | Select-Object -First 8)) {
-            Write-SOKLog "    $($item.Name) (PID $($item.PID), $($item.MemMB) MB) — $($item.Reason)" -Level Debug
+        foreach ($item in ($group.Group | Sort-Object MemKB -Descending | Select-Object -First 8)) {
+            Write-SOKLog "    $($item.Name) (PID $($item.PID), $($item.MemKB) KB) — $($item.Reason)" -Level Debug
         }
         if ($group.Count -gt 8) {
             Write-SOKLog "    ... and $($group.Count - 8) more" -Level Debug
@@ -284,7 +334,7 @@ else {
         try {
             Stop-Process -Id $item.PID -Force -ErrorAction Stop
             $killed++
-            Write-SOKLog "Terminated: $($item.Name) (PID $($item.PID), $($item.MemMB) MB)" -Level Success
+            Write-SOKLog "Terminated: $($item.Name) (PID $($item.PID), $($item.MemKB) KB)" -Level Success
         }
         catch {
             $failed++
@@ -304,7 +354,7 @@ Write-SOKSummary -Stats ([ordered]@{
     DryRun            = $DryRun.IsPresent
     TotalProcesses    = $allProcs.Count
     Targeted          = $toKill.Count
-    EstReclaimMB      = $totalReclaimMB
+    EstReclaimKB      = $totalReclaimKB
     Protected         = $protected.Count
     DurationSec       = $duration
 }) -Title 'PROCESS OPTIMIZER COMPLETE'
