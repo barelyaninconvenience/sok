@@ -95,12 +95,12 @@ TestBatch: 23 PASS / 0 FAIL / 2 TIMEOUT / 5 SKIPPED (as of 2026-04-16)
 
 ## Related Projects
 
-- **meticulos-agents** — 25-agent Claude Code architecture (8 strategic advisors + 14 tactical stone-turners + 2 specialized + 1 wakeup)
-- **meticulos-voice** — Python voice assistant with local STT/TTS and Claude API
+- **meticulos-agents** — Claude Code agent architecture
+- **meticulos-voice** — Python voice assistant (extracted from SOK; standalone project)
 
 ## Author
 
-**S. Clay Caddell** — MS-IS, University of Cincinnati | Former 160th SOAR SIGINT
+**S. Clay Caddell** — University of Cincinnati
 
 ## License
 
