@@ -27,9 +27,9 @@
 
 [CmdletBinding()]
 param(
+    [switch]$DryRun,
     [ValidateSet('Auto', 'Interactive', 'Report')]
-    [string]$Action = 'Report',
-    [switch]$DryRun
+    [string]$Action = 'Report'
 )
 
 #Requires -Version 7.0

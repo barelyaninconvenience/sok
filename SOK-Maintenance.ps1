@@ -19,9 +19,9 @@
 #>
 [CmdletBinding()]
 param(
+    [switch]$DryRun,
     [ValidateSet('Quick', 'Standard', 'Deep', 'Thorough')]
-    [string]$Mode = 'Standard',
-    [switch]$DryRun
+    [string]$Mode = 'Standard'
 )
 
 #Requires -Version 7.0

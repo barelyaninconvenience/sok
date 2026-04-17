@@ -51,12 +51,12 @@
 #Requires -RunAsAdministrator
 [CmdletBinding(SupportsShouldProcess=$true)]
 param(
+    [switch]$DryRun,
     [string]$ArchiveRoot    = 'E:\Backup_Archive',
     [string]$MergeTarget    = 'E:\Backup_Merged',
     [switch]$RunPhase1,      # OPT-IN: Phase 1 (delete raw) — most destructive
     [switch]$SkipPhase2,
     [switch]$SkipPhase3,
-    [switch]$DryRun,
     [switch]$ForceConfirm,   # Suppress interactive prompts (assume Y)
     [int]$ThrottleLimit      = 13
 )

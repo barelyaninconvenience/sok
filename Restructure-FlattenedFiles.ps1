@@ -65,6 +65,9 @@
 
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $false, HelpMessage = "Preview without executing")]
+    [switch]$DryRun,
+
     [Parameter(Mandatory = $true, HelpMessage = "Directory containing flattened files")]
     [ValidateScript({ Test-Path $_ -PathType Container })]
     [string]$FlatDirectory,
@@ -85,9 +88,6 @@ param(
     [Parameter(Mandatory = $false, HelpMessage = "Naming convention for output")]
     [ValidateSet('Original', 'DatePrefix', 'TypeDatePrefix', 'Structured')]
     [string]$NamingConvention = 'Structured',
-
-    [Parameter(Mandatory = $false, HelpMessage = "Preview without executing")]
-    [switch]$DryRun,
 
     [Parameter(Mandatory = $false, HelpMessage = "Max path length (Windows default 260, can enable long paths)")]
     [int]$MaxPathLength = 260

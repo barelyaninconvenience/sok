@@ -42,6 +42,8 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
+    [switch]$DryRun,
+
     [string[]]$SourceFolders = @(
         "$env:USERPROFILE\Documents\Journal\Projects\SOK",
         "$env:USERPROFILE\Documents\Journal\Projects\scripts"
@@ -51,9 +53,7 @@ param(
 
     [string]$OutputDir = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Logs\Archives",
 
-    [string]$Extensions = '(?i)\.(txt|md|ps1|psm1|psd1|py|json|log|yaml|yml|xml|conf|ini|sh|bat|css|js|jsx|ts|tsx|sql|toml|cfg|r|go|rs)$',
-
-    [switch]$DryRun
+    [string]$Extensions = '(?i)\.(txt|md|ps1|psm1|psd1|py|json|log|yaml|yml|xml|conf|ini|sh|bat|css|js|jsx|ts|tsx|sql|toml|cfg|r|go|rs)$'
 )
 
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──

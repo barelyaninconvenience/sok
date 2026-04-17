@@ -25,14 +25,14 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
+    [switch]$DryRun,
     [string[]]$TargetPaths = @(
         "$env:USERPROFILE\Documents\Backup",
         "$env:USERPROFILE\Downloads"
     ),
     [int]$MaxDepth = 13,
     [ValidateSet('Report', 'Flatten')]
-    [string]$Action = 'Report',
-    [switch]$DryRun
+    [string]$Action = 'Report'
 )
 
 $modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'

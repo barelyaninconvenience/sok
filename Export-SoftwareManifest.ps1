@@ -45,8 +45,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$OutputDir    = 'C:\Users\shelc\Documents\Journal\Projects\SOK\Docs',
     [switch]$DryRun,
+    [string]$OutputDir    = 'C:\Users\shelc\Documents\Journal\Projects\SOK\Docs',
     [switch]$SkipSlowSources
 )
 

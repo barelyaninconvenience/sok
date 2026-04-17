@@ -49,11 +49,11 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
+    [switch]$DryRun,  # SOP compliance only — no ops are gated (scan is read-only)
     [int]$MinSizeKB = 21138,
     [int]$ScanDepth = 21,
     [int]$ThrottleLimit = 13,
-    [string]$OutputDir,
-    [switch]$DryRun  # SOP compliance only — no ops are gated (scan is read-only)
+    [string]$OutputDir
 )
 
 $ErrorActionPreference = 'Continue'

@@ -40,11 +40,11 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
+    # DryRun: parse the LiveScan JSON but skip writing digest output files.
+    [switch]$DryRun,
     [string]$InputPath,
     [int]$TopN = 204661,
-    [string]$OutputDir,
-    # DryRun: parse the LiveScan JSON but skip writing digest output files.
-    [switch]$DryRun
+    [string]$OutputDir
 )
 
 $ErrorActionPreference = 'Continue'

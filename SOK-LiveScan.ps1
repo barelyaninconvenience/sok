@@ -16,15 +16,15 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
+    # DryRun: validate init and output path resolution but skip the actual filesystem scan.
+    # LiveScan is inherently slow (30+ min full C:\); DryRun confirms invocability.
+    [switch]$DryRun,
     [string]$SourcePath  = 'C:\',
     [string]$OutJson     = "$env:USERPROFILE\Documents\SOK\Logs\LiveScan\LiveScan_$(Get-Date -Format 'yyyyMMdd_HHmmss').json",
     [string]$ErrorLog    = "$env:USERPROFILE\Documents\SOK\Logs\LiveScan_Errors_$(Get-Date -Format 'yyyyMMdd_HHmmss').log",
     [switch]$DirsOnly,         # Only output directories (much faster, smaller output)
     [int]$MinSizeKB      = 0,  # Skip files smaller than this
-    [switch]$ExcludeNoisyDirs, # Flag to drop massive system folders
-    # DryRun: validate init and output path resolution but skip the actual filesystem scan.
-    # LiveScan is inherently slow (30+ min full C:\); DryRun confirms invocability.
-    [switch]$DryRun
+    [switch]$ExcludeNoisyDirs  # Flag to drop massive system folders
 )
 
 $ErrorActionPreference = 'Continue'

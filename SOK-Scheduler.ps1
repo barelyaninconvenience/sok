@@ -43,11 +43,11 @@
 #>
 [CmdletBinding()]
 param(
+    [switch]$DryRun,
     [string]$ScriptDirectory,
     [ValidateSet('Quick','Standard','Deep','Thorough')]
     [string]$MaintenanceMode = 'Quick',
-    [switch]$Remove,
-    [switch]$DryRun
+    [switch]$Remove
 )
 
 #Requires -Version 7.0

@@ -102,6 +102,9 @@
 #>
 [CmdletBinding(DefaultParameterSetName = 'Install')]
 param(
+    # ── SHARED ───────────────────────────────────────────────────────────────────
+    [switch]$DryRun,
+
     # ── INSTALL MODE ─────────────────────────────────────────────────────────────
     [Parameter(Mandatory, ParameterSetName = 'Install', Position = 0)]
     [ValidatePattern('^[^/]+/[^/]+$')]
@@ -135,8 +138,6 @@ param(
     [Parameter(ParameterSetName = 'Scan')]
     [switch]$Apply,
 
-    # ── SHARED ───────────────────────────────────────────────────────────────────
-    [switch]$DryRun,
     [string]$Token
 )
 

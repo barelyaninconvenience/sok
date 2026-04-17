@@ -29,11 +29,11 @@
 #>
 [CmdletBinding()]
 param(
+    [switch]$DryRun,
     [string[]]$Sources = @("$env:USERPROFILE\Documents\Journal\Projects"),
     [string]$Destination = 'E:\Backup_Archive',
     [switch]$Incremental,
-    [int]$Threads = 13,
-    [switch]$DryRun
+    [int]$Threads = 13
 )
 
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──

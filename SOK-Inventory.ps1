@@ -36,14 +36,14 @@
 
 [CmdletBinding()]
 param(
+    # DryRun: run all collectors (read-only) but skip writing the output JSON.
+    # Use for test-sequencing validation that collectors execute without errors.
+    [switch]$DryRun,
     [string]$OutputPath,
     [ValidateRange(1, 3)]
     [int]$ScanCaliber = 2,
     [string]$PreviousRunPath,
-    [switch]$AllowRedundancy,
-    # DryRun: run all collectors (read-only) but skip writing the output JSON.
-    # Use for test-sequencing validation that collectors execute without errors.
-    [switch]$DryRun
+    [switch]$AllowRedundancy
 )
 
 $ErrorActionPreference = 'Continue'

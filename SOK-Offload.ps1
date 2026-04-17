@@ -48,10 +48,10 @@
 
 [CmdletBinding()]
 param(
+    [switch]$DryRun,
     [string]$ExternalDrive = 'E:',
     [string]$InventoryPath,
-    [int]$MinSizeKB = 21138,
-    [switch]$DryRun
+    [int]$MinSizeKB = 21138
 )
 
 $ErrorActionPreference = 'Continue'

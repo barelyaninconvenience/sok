@@ -82,8 +82,8 @@
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [string]$TargetDrive      = 'F:',
     [switch]$DryRun,
+    [string]$TargetDrive      = 'F:',
     [ValidateRange(0.1, 400)]
     [double]$TestSizeGB       = 5,
     [switch]$SkipRead,
