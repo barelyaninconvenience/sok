@@ -6,7 +6,7 @@ anthropic_api_key: ${ANTHROPIC_API_KEY}
 picovoice_access_key: ${PICOVOICE_ACCESS_KEY}  # Only if using Porcupine wake word
 
 # Paths
-claude_memory_dir: "C:/Users/shelc/.claude/projects/C--Users-shelc/memory"
+claude_memory_dir: "C:/Users/shelc/.claude/projects/C--Users-shelc-Documents-Journal-Projects-scripts/memory"
 session_transcripts_dir: "C:/Users/shelc/Documents/Journal/Projects/ML"
 database_path: "data/conversations.db"
 whisper_model: "large-v3"  # Options: tiny, base, small, medium, large-v3
