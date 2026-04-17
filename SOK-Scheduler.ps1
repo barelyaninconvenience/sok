@@ -109,6 +109,7 @@ $tasks = @(
     [pscustomobject]@{Name='LiveDigest';       Script='SOK-LiveDigest.ps1';        Args='';                          Time='05:18'}
     [pscustomobject]@{Name='Archiver';         Script='SOK-Archiver.ps1';          Args='';                          Time='05:20'}
     [pscustomobject]@{Name='Backup';           Script='SOK-Backup.ps1';            Args='';                          Time='05:22'}
+    [pscustomobject]@{Name='BackupClaude';    Script='SOK-BackupClaude.ps1';      Args='';                          Time='05:35'}
 )
 
 if ($DryRun) { Write-Host "[DRY RUN] No tasks will be registered." -ForegroundColor Yellow }
