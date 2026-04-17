@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Install-GitHubRelease v2.0.0 — Install from GitHub Releases directly, and audit installed
