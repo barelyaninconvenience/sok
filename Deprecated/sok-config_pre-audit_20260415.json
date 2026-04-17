@@ -1,0 +1,84 @@
+{
+  "_comment": "SOK Configuration v2.0.0 — 18Mar2026. Edit this file to customize SOK behavior.",
+  "_version": "2.0.0",
+  "_date": "18Mar2026",
+  "_note_dates": "Display: ddMMMyyyy HH:mm:ss | Storage/filenames: ISO 8601 (yyyy-MM-dd). This is handled by SOK-Common.psm1 — do not change formats here.",
+  "_note_errors": "All ErrorAction is Continue. Every error surfaces to console and log. No silent swallowing.",
+  "_note_wsl": "WSL automation permanently disabled after 5 failed implementation attempts (TITAN v4.0→SOK v2.0). apt hangs from dpkg locks, unattended-upgrades contention, and WSL2 networking drops. Update WSL packages manually in a WSL terminal.",
+
+  "LogDirectory": "C:\\Users\\shelc\\Documents\\SOK\\Logs",
+  "HistoryPath": "C:\\Users\\shelc\\Documents\\SOK\\sok-history.json",
+  "MaxLogAgeDays": 30,
+
+  "ProcessOptimizer": {
+    "MemoryThresholdMB": 500,
+    "CPUThresholdPercent": 80,
+    "AggressionMode": "Balanced",
+    "_note_modes": "Conservative = telemetry+updaters+crashreporters only | Balanced = +idle background+cloud sync+AppData | Aggressive = everything non-protected",
+    "ProtectedProcesses": [
+      "explorer", "svchost", "csrss", "wininit", "winlogon",
+      "lsass", "services", "smss", "dwm", "taskhostw",
+      "RuntimeBroker", "SecurityHealthService", "SearchHost",
+      "MsMpEng", "NisSrv", "WmiPrvSE",
+      "Code", "pwsh", "powershell", "WindowsTerminal", "conhost",
+      "neo4j", "mongod", "mysqld", "postgres", "redis-server",
+      "tailscaled", "docker", "dockerd",
+      "audiodg", "WavesSysSvc64", "WavesSvc64"
+    ]
+  },
+
+  "PackageSync": {
+    "EnabledManagers": [
+      "chocolatey", "scoop", "winget", "pip", "npm",
+      "cargo", "dotnet", "pipx", "go", "powershell"
+    ],
+    "DisabledManagers": ["wsl"],
+    "PackageTimeoutSeconds": 300
+  },
+
+  "Maintenance": {
+    "CachePaths": [
+      "%TEMP%",
+      "%LOCALAPPDATA%\\Temp",
+      "C:\\Windows\\Temp",
+      "%LOCALAPPDATA%\\Microsoft\\Windows\\INetCache",
+      "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Cache",
+      "%LOCALAPPDATA%\\pip\\cache",
+      "%APPDATA%\\npm-cache",
+      "C:\\ProgramData\\chocolatey\\lib-bkp",
+      "C:\\ProgramData\\chocolatey\\cache",
+      "%USERPROFILE%\\.cargo\\registry\\cache",
+      "%USERPROFILE%\\.nuget\\packages"
+    ],
+    "SkipWindowsUpdate": false,
+    "SkipCleanmgr": true,
+    "_note_cleanmgr": "PERMANENTLY true. cleanmgr.exe hangs waiting for UI input in all tested scenarios."
+  },
+
+  "Inventory": {
+    "DefaultScanDepth": 2,
+    "OutputDirectory": "C:\\Users\\shelc\\Documents\\SOK\\Inventory"
+  },
+
+  "ServiceOptimizer": {
+    "_note": "Services marked STOP are auto-stoppable. CONDITIONAL requires user decision or Interactive mode.",
+    "AutoStopServices": ["neo4j", "WavesSysSvc64", "WavesSvc64", "AdobeARMservice"],
+    "ConditionalServices": ["MongoDB", "MySQL", "postgresql-x64-15", "Memurai", "ZeroTierOneService", "TeamViewer", "jenkins", "nginx", "puppet"]
+  },
+
+  "Archiver": {
+    "SourceFolders": [
+      "C:\\Users\\shelc\\Documents\\SOK",
+      "C:\\Users\\shelc\\scripts"
+    ],
+    "OutputDirectory": "C:\\Users\\shelc\\Documents\\SOK\\Archives",
+    "BaseName": "SOK_Archive",
+    "Extensions": "(?i)\\.(txt|md|ps1|psm1|psd1|py|json|log|yaml|yml|xml|conf|ini|sh|bat|css|js|jsx|ts|tsx|sql|toml|cfg|r|go|rs)$"
+  },
+
+  "Offload": {
+    "ExternalDrive": "D:",
+    "MinSizeMB": 100,
+    "_note_ntfs": "External drive MUST be NTFS for junction/symlink support. exFAT will copy files but cannot create junctions."
+  }
+}
