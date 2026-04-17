@@ -241,10 +241,11 @@ def search_chunks(chunks_path: Path, query: str, top_n: int = 5) -> None:
 
     print(f'\n-- Search: "{query}" -- top {len(results)} results --\n')
     for score, chunk in results:
-        print(f'  [{score} hits] {chunk["source"]}  lines {chunk["line_start"]}-{chunk["line_end"]}  (chunk {chunk["chunk_idx"]+1}/{chunk["total_chunks"]})')
-        # Print first 300 chars of content with matching terms highlighted
+        # Encode-safe printing for Windows cp1252 terminal
+        header = f'  [{score} hits] {chunk["source"]}  lines {chunk["line_start"]}-{chunk["line_end"]}  (chunk {chunk["chunk_idx"]+1}/{chunk["total_chunks"]})'
+        print(header.encode('ascii', errors='replace').decode('ascii'))
         snippet = chunk['content'][:300].replace('\n', ' ').strip()
-        print(f'  {snippet}')
+        print(f'  {snippet.encode("ascii", errors="replace").decode("ascii")}')
         print()
 
 

@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     SOK-ProjectsReorg.ps1 — One-shot cleanup of Journal\Projects and scripts\ root clutter.

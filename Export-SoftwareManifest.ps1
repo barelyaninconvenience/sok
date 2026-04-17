@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     Export-SoftwareManifest v1.0.0 — Generate a comprehensive Markdown document of all
