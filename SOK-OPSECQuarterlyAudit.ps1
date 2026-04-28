@@ -113,10 +113,27 @@ foreach ($repo in $Repos) {
 
     Push-Location $repo
     try {
+        # Path exclusions for meta-files that legitimately contain pattern
+        # definitions (the discipline-enforcement infrastructure itself).
+        # Without these, the audit catches its own pattern definitions as findings.
+        $pathExclusions = @(
+            ':!git-hooks',
+            ':!SOK-OPSECQuarterlyAudit.ps1',
+            ':!docs/Top33_Boards_Scopeout_*.md',  # in case it's re-staged
+            ':!Writings/HII_OPSEC_Master_Remediation_Runbook*',
+            ':!Writings/Substrate_Thesis_Launch_Readiness*',
+            ':!Writings/Resume_Public_Sanitized*',
+            ':!Writings/HII_LinkedIn_Connect_Messages_PerPerson*',
+            ':!Writings/HII_Alternatives_Second_Tier_Map*',
+            ':!Writings/HII_OPSEC_*',
+            ':!*feedback_public_artifact_discipline*'
+        )
         $repoFindings = @()
         foreach ($p in $Patterns) {
-            # Use git grep — only scans tracked files; respects .gitignore; faster than Get-ChildItem
-            $matches = & git grep -n -E "$($p.Pattern)" 2>$null
+            # Use git grep — only scans tracked files; respects .gitignore;
+            # excludes meta-files via :!path syntax
+            $grepArgs = @('grep', '-n', '-E', $p.Pattern, '--') + $pathExclusions
+            $matches = & git $grepArgs 2>$null
             if ($matches) {
                 foreach ($m in $matches) {
                     $repoFindings += [PSCustomObject]@{
