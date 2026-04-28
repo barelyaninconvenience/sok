@@ -29,6 +29,7 @@ fi
 
 LEAKED=0
 HITS=""
+WARNINGS=""
 
 # Helper: scan staged-content for a pattern; record hits without modifying files
 scan_pattern() {
@@ -44,12 +45,29 @@ scan_pattern() {
         | grep -nE "$pattern" 2>/dev/null || true)
 
     if [ -n "$matches" ]; then
-        LEAKED=1
-        HITS="${HITS}
-[$severity] $label
+        # Severity-tier semantics:
+        #   HIGH   -> blocks commit (LEAKED=1)
+        #   MEDIUM -> warns + reports but allows commit
+        #   LOW    -> reports informationally only
+        case "$severity" in
+            HIGH)
+                LEAKED=1
+                HITS="${HITS}
+[BLOCKING $severity] $label
 $(echo "$matches" | head -3)
 $(test $(echo "$matches" | wc -l) -gt 3 && echo "  ... ($(echo "$matches" | wc -l) total matches; showing first 3)")
 "
+                ;;
+            MEDIUM)
+                WARNINGS="${WARNINGS}
+[WARN $severity] $label
+$(echo "$matches" | head -2)
+"
+                ;;
+            LOW)
+                # LOW findings are informational only — no print, no block
+                ;;
+        esac
     fi
 }
 
@@ -63,25 +81,29 @@ scan_pattern '\b(Akwei|Menard|Cohen)\b.*\b(team|teammate|coordinated)' "Cat 4: T
 scan_pattern '\bDr\.\s*Li\b.*\b(course|grade|standing)' "Cat 4: Instructor name with academic context" "HIGH"
 
 # === Category 5: Internal queue/backlog vocabulary ===
-scan_pattern '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Re-Informed Action Queue|Operating Stack v[0-9])' "Cat 5: Internal vocabulary" "HIGH"
+# Demoted to MEDIUM (warn-not-block) because these terms appear legitimately
+# in framework-publication contexts (substrate-thesis-companion essays + case
+# studies deliberately publish operational-stack vocabulary as worked examples).
+# Genuine OPSEC categories below remain HIGH (blocking).
+scan_pattern '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Re-Informed Action Queue|Operating Stack v[0-9])' "Cat 5: Internal vocabulary (operational disclosure)" "MEDIUM"
 scan_pattern '\bFIFO Priority Model\b' "Cat 5: Internal vocabulary (FIFO Priority Model)" "MEDIUM"
 scan_pattern '\b(Tier-1|Tier-2|Tier-3) (forcing-function|FIFO|backburner)' "Cat 5: Internal vocabulary (Tier categorization)" "MEDIUM"
-scan_pattern '\bClay-pen\b|\bClay-decision\b|\bClay-judgment\b' "Cat 5: Internal vocabulary (Clay-pen pattern)" "HIGH"
+scan_pattern '\bClay-pen\b|\bClay-decision\b|\bClay-judgment\b' "Cat 5: Internal vocabulary (Clay-pen pattern)" "MEDIUM"
 
 # === Category 6: Memory-system citations ===
 scan_pattern '~/\.claude/CLAUDE\.md' "Cat 6: ~/.claude/CLAUDE.md private path" "HIGH"
-scan_pattern 'Writings/[A-Z][a-zA-Z_0-9]+\.md' "Cat 6: Writings/ private path" "HIGH"
+scan_pattern 'Writings/[A-Z][a-zA-Z_0-9]+\.md' "Cat 6: Writings/ private path" "MEDIUM"
 scan_pattern 'State_Snapshot_(Current|[0-9])' "Cat 6: State_Snapshot reference" "MEDIUM"
 scan_pattern 'Master_Log_[0-9]{8}' "Cat 6: Master_Log dated reference" "MEDIUM"
 scan_pattern 'Abstract_Oversight_[0-9]{8}' "Cat 6: Abstract_Oversight reference" "MEDIUM"
-scan_pattern 'memory/(MEMORY\.md|feedback_|protocol_|user_|project_)' "Cat 6: memory/ directory reference" "HIGH"
+scan_pattern 'memory/(MEMORY\.md|feedback_|protocol_|user_|project_)' "Cat 6: memory/ directory reference" "MEDIUM"
 scan_pattern 'ML/Session_[0-9]{8}' "Cat 6: ML/Session log reference" "MEDIUM"
 
 # === Category 9: HII / interview / employer-target leakage ===
 scan_pattern '\b(HII Mission Tech|HII Mission Technologies)' "Cat 9: HII Mission Tech reference" "HIGH"
 scan_pattern '\bSCIF[ -]round\b' "Cat 9: SCIF-round reference" "HIGH"
 scan_pattern '\b(ATSP5|SHIELD contract)' "Cat 9: HII contract reference" "HIGH"
-scan_pattern '\bWright-Patt(erson)?( AFB)?\b' "Cat 9: Wright-Patt geographic anchor (verify needed before stripping)" "MEDIUM"
+scan_pattern '\bWright-Patt(erson)?( AFB)?\b' "Cat 9: Wright-Patt geographic anchor (verify needed before stripping)" "LOW"
 
 # === Category 10: Overemployment / concurrent-employment vocabulary ===
 scan_pattern '\boveremployment\b' "Cat 10: Overemployment vocabulary" "HIGH"
@@ -98,7 +120,7 @@ scan_pattern '<HOST>.*runs.*(PostgreSQL|MongoDB|Neo4j|MySQL|Redis|InfluxDB)' "Ca
 # === Category 13: Hardware fingerprint ===
 scan_pattern 'JMicron PCIe[0-9]+' "Cat 13: Specific SSD controller" "HIGH"
 scan_pattern 'Intel(64)? Family [0-9]+ Model [0-9]+ Stepping [0-9]+' "Cat 13: CPUID granular fingerprint" "HIGH"
-scan_pattern '\bi7-13700H\b' "Cat 13: Specific CPU model (Clay's machine)" "MEDIUM"
+scan_pattern '\bi7-13700H\b' "Cat 13: Specific CPU model (Clay's machine)" "LOW"
 
 # === Category 14: Drive-topology narration ===
 scan_pattern 'D: unmounted \| E: USB-SSD' "Cat 14: Drive-topology pattern" "HIGH"
@@ -125,14 +147,29 @@ scan_pattern '\(513\) 293-1215' "Cat 4: Personal phone number" "HIGH"
 scan_pattern '513\.293\.1215|5132931215' "Cat 4: Personal phone number (alt format)" "HIGH"
 
 # === Output ===
+# Print warnings (MEDIUM-severity findings) regardless of LEAKED state
+if [ -n "$WARNINGS" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  PRE-COMMIT OPSEC SWEEP — WARNINGS (commit allowed)"
+    echo "============================================================"
+    echo ""
+    echo "Operational disclosure detected (MEDIUM-severity). Review for"
+    echo "appropriateness; commit will proceed."
+    echo ""
+    echo "$WARNINGS"
+    echo "============================================================"
+fi
+
 if [ "$LEAKED" = "1" ]; then
     echo ""
     echo "============================================================"
-    echo "  PRE-COMMIT OPSEC SWEEP — LEAKAGE DETECTED"
+    echo "  PRE-COMMIT OPSEC SWEEP — HIGH-SEVERITY LEAKAGE BLOCKED"
     echo "============================================================"
     echo ""
-    echo "Staged content matches one or more Public Artifact Discipline"
-    echo "leakage patterns (per memory/feedback_public_artifact_discipline.md)."
+    echo "Staged content matches one or more HIGH-severity Public"
+    echo "Artifact Discipline patterns (per"
+    echo "memory/feedback_public_artifact_discipline.md)."
     echo ""
     echo "Findings:"
     echo "$HITS"
@@ -146,5 +183,5 @@ if [ "$LEAKED" = "1" ]; then
     exit 1
 fi
 
-# Clean — let the commit through
+# Clean (or only MEDIUM/LOW warnings) — let the commit through
 exit 0

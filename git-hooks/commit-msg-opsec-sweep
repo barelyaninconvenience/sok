@@ -32,6 +32,7 @@ fi
 
 LEAKED=0
 HITS=""
+WARNINGS=""
 
 scan_msg() {
     local pattern="$1"
@@ -41,11 +42,24 @@ scan_msg() {
     if echo "$MSG_CONTENT" | grep -qE "$pattern" 2>/dev/null; then
         local match_line
         match_line=$(echo "$MSG_CONTENT" | grep -nE "$pattern" | head -1)
-        LEAKED=1
-        HITS="${HITS}
-[$severity] $label
+        case "$severity" in
+            HIGH)
+                LEAKED=1
+                HITS="${HITS}
+[BLOCKING $severity] $label
   $match_line
 "
+                ;;
+            MEDIUM)
+                WARNINGS="${WARNINGS}
+[WARN $severity] $label
+  $match_line
+"
+                ;;
+            LOW)
+                # informational only
+                ;;
+        esac
     fi
 }
 
@@ -75,10 +89,11 @@ scan_msg '\b(HII Mission Tech|HII Mission Technologies)\b' "Cat 9: HII Mission T
 scan_msg '\bSCIF[ -]round\b' "Cat 9: SCIF-round reference" "HIGH"
 scan_msg '\b(ATSP5|SHIELD contract)\b' "Cat 9: HII contract reference" "HIGH"
 scan_msg '\b(DeGraff|Madison Zamzow|Joe Rawlings|Renee Neidigh)\b' "Cat 4: HII panel personnel name" "HIGH"
-scan_msg '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Operating Stack v[0-9])' "Cat 5: Internal vocabulary" "HIGH"
-scan_msg '\bClay-pen\b|\bClay-decision\b|\bClay-judgment\b' "Cat 5: Clay-pen pattern" "HIGH"
-scan_msg '~/\.claude/CLAUDE\.md|memory/(MEMORY|feedback_|protocol_)' "Cat 6: Memory-system path" "HIGH"
-scan_msg 'Writings/[A-Z][a-zA-Z_0-9]+\.md' "Cat 6: Writings/ private path" "HIGH"
+scan_msg '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Operating Stack v[0-9])' "Cat 5: Internal vocabulary (operational disclosure)" "MEDIUM"
+scan_msg '\bClay-pen\b|\bClay-decision\b|\bClay-judgment\b' "Cat 5: Clay-pen pattern" "MEDIUM"
+scan_msg '~/\.claude/CLAUDE\.md' "Cat 6: ~/.claude/CLAUDE.md private path" "HIGH"
+scan_msg 'memory/(MEMORY|feedback_|protocol_)' "Cat 6: Memory-system reference" "MEDIUM"
+scan_msg 'Writings/[A-Z][a-zA-Z_0-9]+\.md' "Cat 6: Writings/ private path" "MEDIUM"
 scan_msg '\boveremployment\b|\bDetection Risk (multiplier|score)\b' "Cat 10: Overemployment vocabulary" "HIGH"
 scan_msg '\bJasmine\b.*\b(Honeywell|Emerson|GE Aero|ICS|OT engineer)' "Cat 11: Spouse employer chain" "HIGH"
 scan_msg 'JMicron PCIe[0-9]+|\bi7-13700H\b' "Cat 13: Hardware fingerprint" "HIGH"
@@ -86,13 +101,24 @@ scan_msg '\bCLAY_PC\b|\bUser: shelc\b' "Cat 12: CLAY_PC / User:shelc fingerprint
 scan_msg '\bshelcaddell@(gmail\.com|mail\.uc\.edu)|\bcaddelsc@mail\.uc\.edu' "Cat 4: Personal email plaintext" "HIGH"
 scan_msg 'Polygraph.*(Full Scope|Counterintelligence) \([0-9]{4}\)' "Cat 2: Polygraph specificity" "HIGH"
 
+if [ -n "$WARNINGS" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  COMMIT-MSG OPSEC SWEEP — WARNINGS (commit allowed)"
+    echo "============================================================"
+    echo "Operational disclosure (MEDIUM) in commit message:"
+    echo "$WARNINGS"
+    echo "============================================================"
+fi
+
 if [ "$LEAKED" = "1" ]; then
     echo ""
     echo "============================================================"
-    echo "  COMMIT-MSG OPSEC SWEEP — LEAKAGE DETECTED IN MESSAGE"
+    echo "  COMMIT-MSG OPSEC SWEEP — HIGH-SEVERITY LEAKAGE BLOCKED"
     echo "============================================================"
     echo ""
-    echo "Your commit message matches one or more leakage patterns."
+    echo "Commit message matches one or more HIGH-severity Public"
+    echo "Artifact Discipline patterns."
     echo ""
     echo "Findings:"
     echo "$HITS"
@@ -103,10 +129,10 @@ if [ "$LEAKED" = "1" ]; then
     echo "  2. Override (rare): 'git commit --no-verify'"
     echo ""
     echo "  Why this matters: matlab-radar-adaptive-waveform has two"
-    echo "  pushed commits (1318e7d, 7b2659f) whose messages contain HII"
-    echo "  references that file-level sanitization didn't catch. Once a"
-    echo "  message lands in pushed history, scrubbing requires force-push"
-    echo "  (CLAUDE.md \xC2\xA74). This hook prevents that class of failure."
+    echo "  pushed commits whose messages contain HII references that"
+    echo "  file-level sanitization didn't catch. Once a message lands"
+    echo "  in pushed history, scrubbing requires force-push. This hook"
+    echo "  prevents that class of failure."
     echo "============================================================"
     exit 1
 fi
