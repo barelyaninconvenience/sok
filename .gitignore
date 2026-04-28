@@ -56,3 +56,14 @@ Sublist3r/
 /5
 /Redundancy
 
+# Personal-infrastructure subdirectories (not generic-framework material)
+# Local copies retained outside git per deprecate-never-delete; not for public.
+clay-voice/
+role-scoped-deployments/
+job-crawler/
+Deprecated/SOK-Writings_20260414_201228/
+
+# Personal-workflow scripts (private to the operator)
+SOK-WritingsCommit.ps1
+output4.ps1
+
