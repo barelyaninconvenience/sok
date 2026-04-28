@@ -89,14 +89,40 @@ EXCLUDE_PATTERNS = re.compile(
 )
 
 # Skip files larger than this (bytes) — large JSON data dumps, etc.
-MAX_FILE_BYTES = 500_000   # 500 KB
+#
+# MEDIUM-7 fix 2026-04-22: previous flat 500KB cap excluded legitimate
+# SOK_Inventory_*.json outputs (often >500KB) and session transcripts — the
+# very artifacts RAG retrieval most needs. Raised the default to 2MB which
+# covers typical SOK inventory + session-transcript sizes while still
+# excluding pathological data dumps (multi-MB JSON arrays, vendored assets).
+#
+# Operator override: set SOK_VECTORIZE_MAX_FILE_BYTES env var to any integer
+# byte value (or "0" for no limit). Example:
+#   $env:SOK_VECTORIZE_MAX_FILE_BYTES = '5000000'   # 5 MB
+#   py -3.14 SOK-Vectorize.py
+#
+# Per-extension caps: could be added later if a single blanket value proves
+# insufficient. For now, env-var-tunable is the minimal non-breaking change.
+_DEFAULT_MAX_FILE_BYTES = 2_000_000   # 2 MB — up from prior 500KB
+_env_override = os.environ.get("SOK_VECTORIZE_MAX_FILE_BYTES", "").strip()
+if _env_override:
+    try:
+        _parsed = int(_env_override)
+        MAX_FILE_BYTES = _parsed if _parsed > 0 else float("inf")
+    except ValueError:
+        print(f"[WARN] SOK_VECTORIZE_MAX_FILE_BYTES={_env_override!r} not an int; using default {_DEFAULT_MAX_FILE_BYTES}", file=sys.stderr)
+        MAX_FILE_BYTES = _DEFAULT_MAX_FILE_BYTES
+else:
+    MAX_FILE_BYTES = _DEFAULT_MAX_FILE_BYTES
 
 # Skip files that look like binary
 BINARY_SIGNATURES = [b'\x00', b'\xff\xfe', b'\xfe\xff', b'\xef\xbb\xbf\x00']
 
 # Default paths
+# Note: SOK boundary per CLAUDE.md §2 — only SOK\Logs\ accepts writes.
+# Prior path SOK\Chunks\ violated this; moved to SOK\Logs\Vectorize\.
 DEFAULT_PROJECT_ROOT = Path(r'C:\Users\shelc\Documents\Journal\Projects')
-DEFAULT_OUTPUT_DIR   = DEFAULT_PROJECT_ROOT / 'SOK' / 'Chunks'
+DEFAULT_OUTPUT_DIR   = DEFAULT_PROJECT_ROOT / 'SOK' / 'Logs' / 'Vectorize'
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -251,10 +277,75 @@ def search_chunks(chunks_path: Path, query: str, top_n: int = 5) -> None:
 
 # ── main run ──────────────────────────────────────────────────────────────────
 
+def _acquire_vectorize_lock(output_dir: Path) -> Path | None:
+    """HIGH-8 fix 2026-04-21: concurrent-run guard.
+
+    Two concurrent invocations (scheduled + on-demand) both open chunks.jsonl
+    in 'w' mode; Windows file handles are not cooperatively locked, so writes
+    interleave and corrupt the JSONL. This helper writes PID + timestamp to
+    output_dir/.vectorize.lock and refuses to proceed if a fresh (<15min old)
+    lock with a live PID is present. Stale locks are reclaimed automatically.
+
+    Returns the lock path on successful acquisition, or None if blocked.
+    """
+    import errno as _errno
+    LOCK_STALE_SEC = 900  # 15 minutes
+    lock_path = output_dir / '.vectorize.lock'
+
+    def _lock_is_stale(p: Path) -> bool:
+        try:
+            age = time.time() - p.stat().st_mtime
+            if age > LOCK_STALE_SEC:
+                return True
+            try:
+                with open(p, 'r', encoding='utf-8') as lf:
+                    owning_pid = int(lf.readline().strip().split(':', 1)[0])
+                os.kill(owning_pid, 0)
+                return False
+            except (ValueError, ProcessLookupError, PermissionError):
+                return True
+            except OSError as e:
+                if e.errno in (_errno.EINVAL, _errno.ESRCH):
+                    return True
+                return False
+        except OSError:
+            return False
+
+    if lock_path.exists() and not _lock_is_stale(lock_path):
+        print(f'[ABORT] Another vectorize run appears active: {lock_path} — refusing to proceed '
+              f'(would corrupt JSONL). Remove the lockfile if you confirmed no other run is executing.')
+        return None
+    try:
+        with open(lock_path, 'w', encoding='utf-8') as lf:
+            lf.write(f'{os.getpid()}:{datetime.now().isoformat()}\n')
+    except OSError as e:
+        print(f'[WARN] Lockfile create failed ({e}) — proceeding without lock; concurrent-run risk present')
+        return None
+    return lock_path
+
+
+def _release_vectorize_lock(lock_path: Path | None) -> None:
+    if lock_path is None:
+        return
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def run(project_root: Path, output_dir: Path, dry_run: bool, incremental: bool, verbose: bool) -> None:
     manifest_path = output_dir / 'manifest.json'
     chunks_path   = output_dir / 'chunks.jsonl'
     summary_path  = output_dir / 'summary.txt'
+
+    # HIGH-8 fix 2026-04-21: acquire lock BEFORE any output-dir work.
+    # Dry-run skips locking because it never writes chunks.jsonl.
+    lock_path: Path | None = None
+    if not dry_run:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = _acquire_vectorize_lock(output_dir)
+        if lock_path is None:
+            return  # lock acquisition failed and printed its own reason
 
     # Load prior manifest for incremental
     prior_manifest: dict[str, float] = {}
@@ -313,7 +404,15 @@ def run(project_root: Path, output_dir: Path, dry_run: bool, incremental: bool, 
             rel = fp.relative_to(project_root)
             try:
                 size = fp.stat().st_size
-                lines = len(fp.read_text(encoding='utf-8', errors='replace').splitlines())
+                # LOW-6 fix 2026-04-22: previously read_text().splitlines() loaded
+                # the entire file into memory for the line count. With MAX_FILE_BYTES
+                # now 2MB (up from 500KB), a pathological file near the cap would
+                # allocate 2-8x its size in Python string objects. Streaming line
+                # count is O(1) memory regardless of file size.
+                lines = 0
+                with open(fp, 'r', encoding='utf-8', errors='replace') as _f:
+                    for _ in _f:
+                        lines += 1
                 print(f'  {rel}  ({size:,}B, {lines} lines)')
             except OSError:
                 print(f'  {rel}  (unreadable)')
@@ -410,6 +509,9 @@ def run(project_root: Path, output_dir: Path, dry_run: bool, incremental: bool, 
 
     summary_path.write_text(summary, encoding='utf-8')
     print(summary)
+
+    # HIGH-8 fix 2026-04-21: release concurrent-run lock at clean exit
+    _release_vectorize_lock(lock_path)
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

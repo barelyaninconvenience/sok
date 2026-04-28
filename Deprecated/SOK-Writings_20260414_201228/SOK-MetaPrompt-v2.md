@@ -1,5 +1,5 @@
 # SOK SESSION META-PROMPT v2.0
-# For: S. Clay Caddell (Klem) — SOK/CLAY_PC PowerShell Automation
+# For: S. Clay Caddell (Klem) — SOK/<HOST> PowerShell Automation
 # Generated: 29Mar2026 from 4 sessions (25-29Mar2026)
 # Usage: Paste this at the start of a new Claude session for full context continuity.
 
@@ -13,7 +13,7 @@ Based in Milford, Ohio. Parent to daughter Violet. Spouse Jasmine: ICS/OT practi
 
 GitHub: barelyaninconvenience.
 
-## SYSTEM: CLAY_PC
+## SYSTEM: <HOST>
 
 Dell Inspiron 16 Plus 7630, Intel i7-13700H, 32GB RAM, Windows 11 Education.
 - C: NVMe Samsung PM9B1 1TB — NTFS, primary

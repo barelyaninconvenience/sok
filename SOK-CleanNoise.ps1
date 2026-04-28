@@ -22,11 +22,20 @@
 .PARAMETER KeepArchives
     Don't delete the existing .7z files in the backup (they're already signal). Default: true.
 
+.PARAMETER AggressiveCleanup
+    C-4 fix 2026-04-21: opt-in flag for extensions that may contain legitimate user data.
+    When false (default), .bak/.old/.lnk/.url/.etl/.evtx are NOT deleted.
+    Rationale: .pst.bak (Outlook), .lnk/.url (the only pointer to an app install on the
+    archive), .etl/.evtx (forensics data — may be intentionally archived).
+
 .NOTES
-    Author: Claude + Clay
-    Date: 2026-04-08
+    Author: S. Clay Caddell (L-9: normalized 2026-04-22 — prior "Claude + Clay" was non-canonical)
+    Date: 2026-04-08; C-4 fix 2026-04-21; L-6/L-9 polish 2026-04-22
     Domain: Utility — Phase 3 of E:\ restructure
     WARNING: This is destructive. DryRun first. Always.
+
+    C-4 also adds: per-file manifest JSON written to SOK\Logs\CleanNoise\ BEFORE
+    deletion so recovery is possible from robocopy-offload of the archive tree.
 #>
 #Requires -Version 7.0
 #Requires -RunAsAdministrator
@@ -34,7 +43,12 @@
 param(
     [switch]$DryRun,
     [string]$TargetPath = 'E:\Backup_Archive',
-    [switch]$KeepArchives = $true
+    # L-6 (Cluster C) fix 2026-04-22: changed [switch] → [bool] for $KeepArchives.
+    # PowerShell switches conventionally default $false; `[switch]$KeepArchives = $true`
+    # was non-conventional and required the `-KeepArchives:$false` syntax to opt out.
+    # Existing callers using that syntax continue to work (bool accepts :$false).
+    [bool]$KeepArchives = $true,
+    [switch]$AggressiveCleanup
 )
 
 $ErrorActionPreference = 'Continue'
@@ -48,7 +62,7 @@ else {
     function Write-SOKLog { param([string]$Message, [string]$Level='Ignore') Write-Host "[$Level] $Message" }
 }
 
-$logDir = 'C:\Users\shelc\Documents\SOK\Logs\CleanNoise'
+$logDir = 'C:\Users\shelc\Documents\Journal\Projects\SOK\Logs\CleanNoise'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $logFile = Join-Path $logDir "CleanNoise_${timestamp}.log"
@@ -65,6 +79,11 @@ Write-Host "`nSOK-CleanNoise — $(Get-Date -Format 'yyyy-MM-dd HH:mm')$(if ($Dr
 
 # ─── NOISE EXTENSIONS ──────────────────────────────────
 
+# C-4 fix 2026-04-21: Default noise list NEVER includes extensions that may contain
+# legitimate user data. Aggressive list (gated by -AggressiveCleanup) adds:
+#   .bak / .old (commonly safety renames + legitimate user backups like .pst.bak)
+#   .lnk / .url (often the only pointer to an app install on an archive)
+#   .etl / .evtx (user forensics data — may be intentionally archived)
 $noiseExtensions = @(
     '.dll', '.sys', '.drv', '.ocx', '.cpl',           # System libraries
     '.msi', '.msp', '.msu', '.msm',                   # Installers
@@ -73,11 +92,17 @@ $noiseExtensions = @(
     '.nupkg', '.whl',                                   # Package managers
     '.pdb', '.ilk', '.obj', '.lib', '.exp',            # Debug/build artifacts
     '.partial',                                         # Incomplete downloads
-    '.etl', '.evtx',                                    # Event logs
     '.vdi', '.vhdx', '.vmdk', '.vhd',                  # Virtual disks
-    '.tmp', '.temp', '.bak', '.old',                   # Temp files
-    '.lnk', '.url'                                     # Shortcuts
+    '.tmp', '.temp'                                     # Temp files
 )
+if ($AggressiveCleanup) {
+    $noiseExtensions += @(
+        '.bak', '.old',           # Backup/safety-rename — legitimate user data possible
+        '.lnk', '.url',           # Shortcuts — may be only app-install pointer
+        '.etl', '.evtx'           # Event logs — forensics data, may be archived intentionally
+    )
+    Log "AGGRESSIVE CLEANUP enabled — .bak/.old/.lnk/.url/.etl/.evtx now in noise list" -Level Warn
+}
 
 # EXEs to keep (same patterns as ExtractSignal)
 $keepExePatterns = @(
@@ -131,6 +156,29 @@ $noiseSizeGB = [math]::Round(($noiseFiles | Measure-Object -Property Length -Sum
 Log "Found $($noiseFiles.Count) noise files ($noiseSizeGB GB)" -Level Annotate
 Log "Keeping $keepCount files"
 
+# C-4 fix 2026-04-21: write manifest BEFORE deletion for post-run recovery.
+# Manifest captures FullName + Length + LastWriteTime + Extension so a robocopy-offload
+# of the archive tree can be selectively restored. Manifest is written in BOTH DryRun
+# and live mode — DryRun manifest documents what WOULD be deleted.
+$manifestPath = Join-Path $logDir "CleanNoise_Manifest_${timestamp}.jsonl"
+try {
+    $sw = [System.IO.StreamWriter]::new($manifestPath, $false, [System.Text.Encoding]::UTF8)
+    foreach ($f in $noiseFiles) {
+        $entry = [ordered]@{
+            FullName = $f.FullName
+            Length = $f.Length
+            LastWriteTime = $f.LastWriteTime.ToString('o')
+            Extension = $f.Extension.ToLower()
+        }
+        $sw.WriteLine(($entry | ConvertTo-Json -Compress -Depth 4))
+    }
+    $sw.Close()
+    Log "Pre-deletion manifest written: $manifestPath ($($noiseFiles.Count) entries)" -Level Success
+} catch {
+    Log "Manifest write FAILED: $_ — aborting before deletion" -Level Error
+    if (-not $DryRun) { exit 1 }
+}
+
 # ─── PHASE 2: DELETE NOISE (or preview) ─────────────────
 
 Log "PHASE 2: $(if ($DryRun) { 'PREVIEW' } else { 'DELETING' }) noise files..." -Level Section
@@ -171,19 +219,37 @@ if ($DryRun) {
 if (-not $DryRun) {
     Log "PHASE 3: Removing empty directories..." -Level Section
     $emptyRemoved = 0
-    # Bottom-up: deepest first
+    $emptySkippedEnumFail = 0
+    # H-4 fix 2026-04-21: surface enumeration failures instead of silently treating
+    # them as empty. Get-ChildItem -Force on an ACL-protected dir or a path-too-long
+    # dir returns an empty collection without raising an error; the prior code then
+    # treated empty as "safely deletable" → removing the dir header lost the MFT
+    # pointer to still-present children (orphaned files). Use
+    # [System.IO.Directory]::EnumerateFileSystemEntries which throws on enumeration
+    # failure; only delete when enumeration completes cleanly AND returns zero entries.
     Get-ChildItem $TargetPath -Recurse -Directory -Force -ErrorAction SilentlyContinue |
         Sort-Object { $_.FullName.Length } -Descending |
         ForEach-Object {
-            $items = Get-ChildItem $_.FullName -Force -ErrorAction SilentlyContinue
-            if (-not $items -or $items.Count -eq 0) {
+            $dir = $_.FullName
+            $reallyEmpty = $false
+            try {
+                $iter = [System.IO.Directory]::EnumerateFileSystemEntries($dir)
+                $reallyEmpty = -not $iter.GetEnumerator().MoveNext()
+            } catch {
+                # Enumeration failed (ACL-protected, path-too-long, or transient I/O).
+                # Refuse to delete — false-empty would orphan children.
+                $emptySkippedEnumFail++
+                Log "  SKIP (enumeration failed, dir NOT deleted): $dir — $($_.Exception.Message)" -Level Warn
+                return
+            }
+            if ($reallyEmpty) {
                 try {
-                    Remove-Item $_.FullName -Force -ErrorAction Stop
+                    Remove-Item $dir -Force -ErrorAction Stop
                     $emptyRemoved++
                 } catch { }
             }
         }
-    Log "Removed $emptyRemoved empty directories" -Level Success
+    Log "Removed $emptyRemoved empty directories ($emptySkippedEnumFail skipped due to enumeration failure)" -Level Success
 } else {
     $emptyDirs = Get-ChildItem $TargetPath -Recurse -Directory -Force -ErrorAction SilentlyContinue |
         Where-Object { -not (Get-ChildItem $_.FullName -Force -ErrorAction SilentlyContinue) }

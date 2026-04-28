@@ -83,8 +83,15 @@ $ErrorActionPreference = 'Continue'
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-$SCRIPTS_DIR = 'C:\Users\shelc\Documents\Journal\Projects\scripts'
-$SOK_ROOT    = 'C:\Users\shelc\Documents\Journal\Projects\SOK'
+# Cluster-A MEDIUM fix 2026-04-21: derive paths from $PSScriptRoot where available
+# for substrate-portability. If $PSScriptRoot is unset (dot-sourced / interactive),
+# fall back to the canonical shelc-user path. Matches the H-8-era pattern.
+$SCRIPTS_DIR = if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'SOK-Inventory.ps1'))) {
+    $PSScriptRoot
+} else {
+    'C:\Users\shelc\Documents\Journal\Projects\scripts'
+}
+$SOK_ROOT    = Join-Path (Split-Path $SCRIPTS_DIR -Parent) 'SOK'
 $RunId       = Get-Date -Format 'yyyyMMdd-HHmmss'
 $OutDir      = Join-Path $SOK_ROOT "Logs\TestBatch\$RunId"
 $BatchLog    = Join-Path $OutDir '_batch-runner.log'
@@ -134,7 +141,11 @@ $Tests = @(
     @{
         Group     = 'Meta-PAST'
         Script    = 'SOK-PAST-BlankSlate.ps1'
-        Args      = @('-DryRun', '-SnapshotOnly', '-ScanRoots', 'C:\Users\shelc\Documents')
+        # Cluster-A LOW fix 2026-04-21: -ScanRoots declared as [string[]] in
+        # target script; PS argument binder coerces a bare string here but an
+        # explicit array matches the parameter type exactly and makes multi-root
+        # expansion trivial.
+        Args      = @('-DryRun', '-SnapshotOnly', '-ScanRoots', @('C:\Users\shelc\Documents'))
         Slow      = $true
         TimeoutSec = 1333
         Note      = '[SLOW] Blank-slate implementation. ScanRoots scoped to Documents for test speed.'
@@ -279,7 +290,7 @@ $Tests = @(
         Group  = 'System'
         Script = 'SOK-Scheduler.ps1'
         Args   = @('-DryRun')
-        Note   = 'Previews 13 daily + 1 weekly task registrations. No Task Scheduler writes.'
+        Note   = 'Previews 14 daily + 1 weekly task registrations. No Task Scheduler writes.'
     }
     @{
         Group  = 'System'
@@ -299,10 +310,12 @@ $Tests = @(
     @{
         Group  = 'Utility'
         Script = 'Install-GitHubRelease.ps1'
+        Slow   = $true  # Scoop manifest scan + inventory cross-ref takes 5-10 min
         Args   = @('-DryRun', '-ScanInventory')
         Note   = 'ScanInventory mode: cross-references installed tools vs GitHub sources. No downloads.'
-        Slow   = $true  # Scoop manifest scan + inventory cross-ref takes 5-10 min
     }
+    # Cluster-A LOW fix 2026-04-21: Slow flag re-ordered before Note for consistency
+    # with the rest of this table's convention (flags precede descriptive fields).
     @{
         Group  = 'Utility'
         Script = 'SOK-ProjectsReorg.ps1'
@@ -317,7 +330,7 @@ $Tests = @(
             '-Mode',          'MetadataRestructure',
             # v1.0.2 (2026-04-14): resolve under $OutDir (canonical
             # Journal\Projects\SOK\Logs\TestBatch\<RunId>) instead of the legacy
-            # Documents\SOK\Logs\... path per CLAUDE.md §9.
+            # Documents\Journal\Projects\SOK\Logs\... path per CLAUDE.md §9.
             '-OutputRoot',    (Join-Path $OutDir 'FlattenedRecovery'),
             '-DryRun'
         )
@@ -374,6 +387,15 @@ function Invoke-TestCase {
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
+    # Cluster-A MEDIUM fix 2026-04-21: fail-fast if pwsh missing. Without this,
+    # every child Start-Process fails with a confusing WinNT error rather than an
+    # actionable "PowerShell 7 required" message.
+    if (-not $script:__pwshChecked) {
+        if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+            throw 'pwsh.exe (PowerShell 7+) required to invoke SOK test scripts. Install PowerShell 7+ and re-run.'
+        }
+        $script:__pwshChecked = $true
+    }
     $proc = Start-Process `
         -FilePath    'pwsh' `
         -ArgumentList $argParts `
@@ -519,8 +541,8 @@ $md = [System.Text.StringBuilder]::new()
 [void]$md.AppendLine("| Skipped (-SkipSlow) | $($Skipped.Count) |")
 [void]$md.AppendLine("")
 
-# Group results by Group for the detail table
-$byGroup = $Results | Group-Object { $_ | Select-Object -ExpandProperty Note -ErrorAction SilentlyContinue; return $null } -ErrorAction SilentlyContinue
+# Cluster-A MEDIUM fix 2026-04-21: removed dead Group-Object expression that
+# emitted $null for every item and was never consumed downstream. Dead code.
 
 [void]$md.AppendLine("## Test Results")
 [void]$md.AppendLine("")
@@ -535,7 +557,10 @@ foreach ($r in $Results) {
         'NOT_FOUND' { ':warning:' }
         default     { '?' }
     }
-    $shortNote = if ($r.Note.Length -gt 80) { $r.Note.Substring(0, 77) + '...' } else { $r.Note }
+    # Cluster-A MEDIUM fix 2026-04-21: null-safe Note check — if StrictMode is ever
+    # enabled at module scope, $r.Note.Length on $null would break. Works today
+    # because StrictMode isn't active here.
+    $shortNote = if ($r.Note -and $r.Note.Length -gt 80) { $r.Note.Substring(0, 77) + '...' } else { $r.Note }
     [void]$md.AppendLine("| ``$($r.Script)`` | $statusIcon $($r.Status) | $($r.ExitCode) | $($r.DurationS)s | $shortNote |")
 }
 

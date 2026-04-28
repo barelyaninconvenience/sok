@@ -1,17 +1,70 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Configures Claude Desktop MCP with Google Workspace credentials from User environment variables.
+    [DEPRECATED 2026-04-22] Configures Claude Desktop MCP with Google Workspace
+    credentials from User environment variables.
+
 .DESCRIPTION
-    Reads GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET from User-level env vars
-    and writes them directly into the Claude Desktop config. Also sets GOOGLE_CLIENT_SECRET_PATH
-    if the OAuth JSON file is found. No credentials are displayed on screen.
+    ─────────────────────────────────────────────────────────────────────────
+    DEPRECATION NOTICE — this script violates CLAUDE.md §2 credential storage
+    standard by (a) reading credentials from plaintext User env vars (registry
+    HKCU:\Environment) and (b) writing them into claude_desktop_config.json as
+    plaintext JSON. Both are disallowed under "no credentials in plaintext...
+    environment variables exported in profile, or any committed file."
+
+    SUPERSEDED BY — use the DPAPI + stdio-wrapper pattern instead:
+
+      1. Store Google OAuth credentials in DPAPI:
+           Import-Module 'C:\Users\shelc\Documents\Journal\Projects\scripts\common\SOK-Secrets.psm1'
+           Set-SOKSecret -Name 'GoogleOAuthClientId'     -Plain '<id>'
+           Set-SOKSecret -Name 'GoogleOAuthClientSecret' -Plain '<secret>'
+
+      2. Configure claude_desktop_config.json to launch the DPAPI-retrieval wrapper:
+           "google_workspace": {
+             "command": "cmd",
+             "args": ["/c", "C:\\Users\\shelc\\Documents\\Journal\\Projects\\scripts\\launch-workspace-mcp.cmd"]
+           }
+
+      3. Zero the User env vars:
+           [Environment]::SetEnvironmentVariable('GOOGLE_OAUTH_CLIENT_ID', $null, 'User')
+           [Environment]::SetEnvironmentVariable('GOOGLE_OAUTH_CLIENT_SECRET', $null, 'User')
+
+    Full rationale + variants: Writings/MCP_Config_Consolidation_Plan_20260421.md
+    ─────────────────────────────────────────────────────────────────────────
+
+    Original behavior: Reads GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET
+    from User-level env vars and writes them directly into the Claude Desktop
+    config. Also sets GOOGLE_CLIENT_SECRET_PATH if the OAuth JSON file is found.
+    No credentials are displayed on screen (DryRun redacts).
+
 .PARAMETER DryRun
     Preview what would be written without modifying the config.
+
+.PARAMETER AcknowledgeDeprecation
+    Required as of 2026-04-22. Operators must pass this switch to confirm they
+    understand the supersession path before the script will write anything.
+    Without the switch, the script prints the deprecation notice and exits 2.
 #>
 param(
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$AcknowledgeDeprecation
 )
+
+# 2026-04-22 deprecation gate
+if (-not $AcknowledgeDeprecation) {
+    Write-Host ""
+    Write-Host "━━━ DEPRECATION NOTICE ━━━" -ForegroundColor Red
+    Write-Host "This script writes plaintext Google OAuth credentials into claude_desktop_config.json."
+    Write-Host "Per CLAUDE.md §2 credential storage standard: 'no credentials in plaintext... any committed file'."
+    Write-Host ""
+    Write-Host "Migrate instead via the DPAPI + stdio-wrapper pattern:" -ForegroundColor Yellow
+    Write-Host "  See comment-block in this script header OR Writings/MCP_Config_Consolidation_Plan_20260421.md"
+    Write-Host ""
+    Write-Host "If you have already verified you still need to run this (e.g., backward-compat emergency)," -ForegroundColor Yellow
+    Write-Host "re-run with -AcknowledgeDeprecation to proceed."
+    Write-Host ""
+    exit 2
+}
 
 $configPath = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
 

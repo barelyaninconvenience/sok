@@ -1,5 +1,27 @@
 #Requires -RunAsAdministrator
 <#
+═══════════════════════════════════════════════════════════════════════════════
+  HISTORICAL REFERENCE — SUPERSEDED 2026-04-14
+═══════════════════════════════════════════════════════════════════════════════
+  This script is a historical ancestor of SOK-BareMetal_v5.3.ps1.
+  Per project_sok.md BareMetal lineage:
+    SME_SysAdmin_Toolsuite_v3.ps1
+      → SME_SysAdmin_v4_Reconciliation.ps1
+        → SOK-BareMetal_v5_QA.ps1 (Deprecated/)
+          → SOK-BareMetal_v5.1_Final.ps1 (Deprecated/)
+            → SOK-BareMetal_v5.2.ps1 (Deprecated/)
+              → SOK-BareMetal_v5.3.ps1 (ACTIVE CANONICAL)
+
+  DO NOT RUN this script for substrate recovery — it lacks the 92+ fixes + H-1
+  supply-chain hash pinning + H-10 $PROFILE backup + other hardening applied to
+  v5.3 during the 2026-04-17 + 2026-04-22 audit passes.
+
+  Run SOK-BareMetal_v5.3.ps1 instead.
+
+  This file is retained for historical reference (REMOVED-FROM justifications +
+  conceptual genealogy). Move to scripts/Deprecated/ pending Clay's §4 checkpoint.
+═══════════════════════════════════════════════════════════════════════════════
+
 .SYNOPSIS
     SME System Administrator Complete Toolsuite Restoration Script v3.0
 .DESCRIPTION

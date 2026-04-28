@@ -1,0 +1,200 @@
+{
+  "name": "Calendar Control — Multi-Role Enforcement",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "value": 1,
+              "unit": "hours"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Hourly Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Fires every hour. Per Writings/Multi_Role_Calendar_Setup_20260421.md: runs audit of current-role-block integrity + upcoming-24h meeting filter."
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": "={{ $env.JOBA_CALENDAR_ID }}",
+        "returnAll": false,
+        "limit": 50,
+        "timeMin": "={{ $now.toISO() }}",
+        "timeMax": "={{ $now.plus({ hours: 24 }).toISO() }}"
+      },
+      "id": "fetch-joba-events",
+      "name": "Fetch Job A Events (24h)",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1,
+      "position": [460, 200],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "joba-oauth",
+          "name": "Job A Google Calendar OAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "event",
+        "operation": "getAll",
+        "calendar": "={{ $env.JOBB_CALENDAR_ID }}",
+        "returnAll": false,
+        "limit": 50,
+        "timeMin": "={{ $now.toISO() }}",
+        "timeMax": "={{ $now.plus({ hours: 24 }).toISO() }}"
+      },
+      "id": "fetch-jobb-events",
+      "name": "Fetch Job B Events (24h)",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1,
+      "position": [460, 400],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "jobb-oauth",
+          "name": "Job B Google Calendar OAuth"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "multiplex",
+        "options": {}
+      },
+      "id": "merge-events",
+      "name": "Merge Both Role Events",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Detect role-block violations:\n// - Any Job A event inside Job B's canonical block (13:00-17:00)\n// - Any Job B event inside Job A's canonical block (08:00-12:00)\n// - Any event during declared focus/deep-work blocks\n// - Any back-to-back events with <15min gap (breaks L-15 ramp-up discipline)\n\nconst JOBA_BLOCK_START = 8;   // 08:00\nconst JOBA_BLOCK_END = 12;    // 12:00\nconst JOBB_BLOCK_START = 13;  // 13:00\nconst JOBB_BLOCK_END = 17;    // 17:00\nconst MIN_GAP_MIN = 15;\n\nconst violations = [];\nconst events = items.map(i => i.json);\n\nfor (const event of events) {\n  const start = new Date(event.start.dateTime || event.start.date);\n  const end = new Date(event.end.dateTime || event.end.date);\n  const hour = start.getHours();\n  const calendarId = event.calendarId || 'unknown';\n  \n  // Check cross-role contamination\n  const isJobA = calendarId.includes('joba') || event.summary?.toLowerCase().includes('[joba]');\n  const isJobB = calendarId.includes('jobb') || event.summary?.toLowerCase().includes('[jobb]');\n  \n  if (isJobA && hour >= JOBB_BLOCK_START && hour < JOBB_BLOCK_END) {\n    violations.push({\n      type: 'cross-role-contamination',\n      severity: 'high',\n      event: event.summary,\n      start: start.toISOString(),\n      detail: 'Job A event in Job B block'\n    });\n  }\n  if (isJobB && hour >= JOBA_BLOCK_START && hour < JOBA_BLOCK_END) {\n    violations.push({\n      type: 'cross-role-contamination',\n      severity: 'high',\n      event: event.summary,\n      start: start.toISOString(),\n      detail: 'Job B event in Job A block'\n    });\n  }\n  \n  // Check deep-work-block intrusion\n  if (event.summary?.toLowerCase().includes('deep work') || event.summary?.toLowerCase().includes('focus block')) {\n    continue; // This IS a focus block; not a violation\n  }\n  \n  // Flag events during declared focus windows (08:30-11:30 and 13:30-16:30 are deep-work)\n  if ((hour >= 8.5 && hour < 11.5) || (hour >= 13.5 && hour < 16.5)) {\n    const minutes = start.getMinutes();\n    const hourDec = hour + minutes / 60;\n    if ((hourDec >= 8.5 && hourDec < 11.5) || (hourDec >= 13.5 && hourDec < 16.5)) {\n      violations.push({\n        type: 'deep-work-intrusion',\n        severity: 'medium',\n        event: event.summary,\n        start: start.toISOString(),\n        detail: 'Event scheduled during declared deep-work block'\n      });\n    }\n  }\n}\n\n// Back-to-back check\nconst sortedEvents = events.sort((a, b) => \n  new Date(a.start.dateTime || a.start.date) - new Date(b.start.dateTime || b.start.date)\n);\nfor (let i = 1; i < sortedEvents.length; i++) {\n  const prevEnd = new Date(sortedEvents[i-1].end.dateTime || sortedEvents[i-1].end.date);\n  const currStart = new Date(sortedEvents[i].start.dateTime || sortedEvents[i].start.date);\n  const gapMin = (currStart - prevEnd) / (1000 * 60);\n  if (gapMin > 0 && gapMin < MIN_GAP_MIN) {\n    violations.push({\n      type: 'back-to-back',\n      severity: 'low',\n      event: `${sortedEvents[i-1].summary} → ${sortedEvents[i].summary}`,\n      start: currStart.toISOString(),\n      detail: `${gapMin.toFixed(0)}min gap < ${MIN_GAP_MIN}min minimum`\n    });\n  }\n}\n\nreturn violations.map(v => ({ json: v }));"
+      },
+      "id": "detect-violations",
+      "name": "Detect Calendar Violations",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $items().length }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "violations-exist",
+      "name": "Any Violations?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "bearerTokenAuth",
+        "url": "https://ntfy.sh/{{ $env.NTFY_TOPIC }}",
+        "method": "POST",
+        "sendBody": true,
+        "contentType": "raw",
+        "bodyContent": "=Calendar Violations ({{ $items().length }}):\n\n{{ $items().map(i => `- [${i.json.severity}] ${i.json.type}: ${i.json.event} at ${i.json.start}`).join('\\n') }}"
+      },
+      "id": "notify-clay",
+      "name": "Notify via ntfy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1340, 200]
+    }
+  ],
+  "connections": {
+    "cron-trigger": {
+      "main": [
+        [
+          {
+            "node": "fetch-joba-events",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "fetch-jobb-events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-joba-events": {
+      "main": [
+        [
+          {
+            "node": "merge-events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-jobb-events": {
+      "main": [
+        [
+          {
+            "node": "merge-events",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "merge-events": {
+      "main": [
+        [
+          {
+            "node": "detect-violations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "detect-violations": {
+      "main": [
+        [
+          {
+            "node": "violations-exist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "violations-exist": {
+      "main": [
+        [
+          {
+            "node": "notify-clay",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "_comment": "Calendar Control Multi-Role Enforcement Workflow. Polls both role calendars hourly, merges events, detects violations (cross-role contamination / deep-work intrusion / back-to-back < 15min gap), and notifies Clay via ntfy.sh if any found. Per Writings/Multi_Role_Calendar_Setup_20260421.md and Writings/Operating_Stack_v1_4_L15_Delta_20260421.md. Activation: import into n8n; create role OAuth credentials; set env vars (JOBA_CALENDAR_ID / JOBB_CALENDAR_ID / NTFY_TOPIC); enable. Single-role operation: disable Job B branch.",
+  "_version": "1.0.0",
+  "_authored": "2026-04-21"
+}

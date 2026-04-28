@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     SOK-Common.psm1 — Shared module for all SOK automation scripts.
@@ -60,8 +61,41 @@ $script:DateDisplay = 'ddMMMyyyy HH:mm:ss'
 $script:DateISO     = 'yyyy-MM-dd HH:mm:ss'
 $script:DateFile    = 'yyyyMMdd_HHmmss'
 
-# Filesystem roots — all script path resolution bottoms out here
-$script:ProjectRoot = 'C:\Users\shelc\Documents\Journal\Projects'
+# Filesystem roots — all script path resolution bottoms out here.
+# Foundational H-8 fix 2026-04-21: prior hardcode
+#   $script:ProjectRoot = 'C:\Users\shelc\Documents\Journal\Projects'
+# broke substrate recovery on any machine where the interactive user isn't named
+# 'shelc'. Resolution cascade (first match wins):
+#   1. Win32_UserProfile query for the most-recently-used real user (Special=false,
+#      not systemprofile/NetworkService/LocalService/defaultuser). Substrate-portable.
+#   2. $env:USERPROFILE if it's not the systemprofile path. Handles interactive sessions.
+#   3. Hardcoded 'C:\Users\shelc' as last-ditch fallback. Current-machine safety net.
+# The $<host>\Documents\Journal\Projects suffix is invariant across the cascade.
+$script:ProjectRoot = $null
+try {
+    $profileCim = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+        Where-Object {
+            $_.Special -eq $false -and
+            $_.LocalPath -notmatch '(?i)systemprofile|NetworkService|LocalService|defaultuser'
+        } |
+        Sort-Object LastUseTime -Descending |
+        Select-Object -First 1
+    if ($profileCim -and $profileCim.LocalPath -and (Test-Path $profileCim.LocalPath)) {
+        $candidate = Join-Path $profileCim.LocalPath 'Documents\Journal\Projects'
+        if (Test-Path $candidate) { $script:ProjectRoot = $candidate }
+    }
+} catch {
+    # CIM unavailable (very-early bootstrap) — fall through
+}
+if (-not $script:ProjectRoot) {
+    if ($env:USERPROFILE -and ($env:USERPROFILE -notlike '*systemprofile*')) {
+        $candidate = Join-Path $env:USERPROFILE 'Documents\Journal\Projects'
+        if (Test-Path $candidate) { $script:ProjectRoot = $candidate }
+    }
+}
+if (-not $script:ProjectRoot) {
+    $script:ProjectRoot = 'C:\Users\shelc\Documents\Journal\Projects'
+}
 $script:ScriptBase  = Join-Path $script:ProjectRoot 'scripts'
 $script:CommonPath  = Join-Path $script:ScriptBase 'common\SOK-Common.psm1'
 $script:ConfigPath  = Join-Path $script:ScriptBase 'config\sok-config.json'
@@ -161,37 +195,70 @@ $script:PrerequisiteMap = @{
 function Get-SOKConfig {
     [CmdletBinding()]
     param([string]$ConfigPath = $script:ConfigPath)
+    # Kill-exclusion defaults — kept in ONE place and referenced twice below so the
+    # top-level and namespaced views never drift.
+    $defaultProtected = @(
+        # Windows kernel + session
+        'explorer', 'svchost', 'csrss', 'wininit', 'winlogon', 'lsass',
+        'services', 'smss', 'dwm', 'taskhostw', 'RuntimeBroker',
+        'SecurityHealthService', 'SearchHost', 'fontdrvhost', 'logonui',
+        # Security
+        'MsMpEng', 'NisSrv', 'WmiPrvSE',
+        # Developer tools (operator is actively using these)
+        'Code', 'pwsh', 'powershell', 'WindowsTerminal', 'conhost',
+        # Operator-specific critical apps
+        'claude',           # SKIP_CLAUDE — never kill the AI session
+        'Spotify',          # Music during work sessions
+        'olk', 'OUTLOOK',   # Email (Outlook New + Classic)
+        'OneDrive',         # Cloud sync — killing mid-sync corrupts files
+        'GoogleDriveFS',    # Same rationale as OneDrive
+        'Microsoft.AAD.BrokerPlugin',  # Azure AD auth — kills SSO on kill
+        # Databases — protected even in Aggressive mode
+        'neo4j', 'mongod', 'mysqld', 'postgres', 'redis-server', 'memurai-server',
+        # Infrastructure
+        'tailscaled', 'docker', 'dockerd',
+        # Audio pipeline — killing audiodg causes audio dropout until reboot
+        'audiodg', 'WavesSysSvc64', 'WavesSvc64'
+    )
+    # BloatProcesses default (namespaced consumption via $config.ProcessOptimizer.BloatProcesses)
+    $defaultBloat = @(
+        'chrome', 'msedge', 'firefox', 'brave',
+        'discord', 'Discord', 'DiscordCanary',
+        'Teams', 'ms-teams', 'msteams',
+        'slack', 'Spotify', 'SpotifyWebHelper',
+        'Signal', 'Telegram', 'WhatsApp', 'Notion',
+        'figma_agent', 'Figma',
+        'PowerToys', 'PowerToys.PowerLauncher', 'PowerToys.CmdPal',
+        'SteelSeriesGG', 'SteelSeries GG', 'SteelEngine',
+        'telegraf', 'tailscaled', 'tailscale',
+        'netbird', 'netbird-ui',
+        'msedgewebview2', 'networx',
+        'Foxit PDF Reader', 'FoxitPDFReaderUpdateService',
+        'PhoneExperienceHost', 'GWCrashpadHandler', 'updatesvc'
+    )
+
     $defaults = @{
         LogBase               = $script:DefaultLogBase
         MaxLogAgeDays         = $script:DEFAULT_MAX_LOG_AGE_DAYS
         MemoryThresholdMB     = 2048
         CPUThresholdPercent   = 83.33
-        # ProtectedProcesses: NEVER killed by any SOK module (PRESENT, Cleanup, PreSwap).
-        # This list is the authoritative kill-exclusion set for all of SOK.
-        # Add SKIP_CLAUDE guard check at each kill site — belt + suspenders.
-        ProtectedProcesses    = @(
-            # Windows kernel + session
-            'explorer', 'svchost', 'csrss', 'wininit', 'winlogon', 'lsass',
-            'services', 'smss', 'dwm', 'taskhostw', 'RuntimeBroker',
-            'SecurityHealthService', 'SearchHost', 'fontdrvhost', 'logonui',
-            # Security
-            'MsMpEng', 'NisSrv', 'WmiPrvSE',
-            # Developer tools (operator is actively using these)
-            'Code', 'pwsh', 'powershell', 'WindowsTerminal', 'conhost',
-            # Operator-specific critical apps
-            'claude',           # SKIP_CLAUDE — never kill the AI session
-            'Spotify',          # Music during work sessions
-            'olk', 'OUTLOOK',   # Email (Outlook New + Classic)
-            'OneDrive',         # Cloud sync — killing mid-sync corrupts files
-            'GoogleDriveFS',    # Same rationale as OneDrive
-            'Microsoft.AAD.BrokerPlugin',  # Azure AD auth — kills SSO on kill
-            # Databases — protected even in Aggressive mode
-            'neo4j', 'mongod', 'mysqld', 'postgres', 'redis-server', 'memurai-server',
-            # Infrastructure
-            'tailscaled', 'docker', 'dockerd',
-            # Audio pipeline — killing audiodg causes audio dropout until reboot
-            'audiodg', 'WavesSysSvc64', 'WavesSvc64'
-        )
+        # Legacy top-level ProtectedProcesses — kept for backward compatibility with any
+        # call-site that still uses $config.ProtectedProcesses directly. Defaults-consistency
+        # 2026-04-22: now identical to $config.ProcessOptimizer.ProtectedProcesses.
+        ProtectedProcesses    = $defaultProtected
+        # Defaults-consistency 2026-04-22: mirror sok-config.json's namespaced structure
+        # so post-C-1 reads ($config.ProcessOptimizer.ProtectedProcesses +
+        # $config.ProcessOptimizer.BloatProcesses) return non-empty when the config file
+        # is missing. Without this, a fresh-substrate or deleted-config scenario would
+        # regress C-1 (Claude kill risk under Balanced/Aggressive) and silently ignore
+        # the bloat list.
+        ProcessOptimizer      = @{
+            ProtectedProcesses = $defaultProtected
+            BloatProcesses     = $defaultBloat
+            MemoryThresholdMB  = 500
+            CPUThresholdPercent = 80
+            AggressionMode     = 'Balanced'
+        }
         AggressionMode        = 'Balanced'
         EnabledManagers       = @('chocolatey', 'scoop', 'winget', 'pip', 'npm',
                                    'cargo', 'dotnet', 'pipx', 'go', 'powershell')
@@ -201,25 +268,39 @@ function Get-SOKConfig {
         SkipWindowsUpdate     = $false
         SkipCleanmgr          = $true
     }
+    # CRIT-1 FIX (2026-04-18): Get-SOKConfig is called BEFORE Initialize-SOKLog in
+    # most tactical scripts, so $script:CurrentLogPath is $null and Write-SOKLog
+    # silently drops config-load diagnostics. Guard with log-path check; fall back
+    # to Write-Verbose (not silently swallowed) when log isn't initialized yet.
     if (Test-Path $ConfigPath) {
         try {
             $userConfig = Get-Content $ConfigPath -Raw | ConvertFrom-Json
             foreach ($prop in $userConfig.PSObject.Properties) {
                 if ($prop.Name -notmatch '^_') { $defaults[$prop.Name] = $prop.Value }
             }
-            Write-SOKLog "Config loaded: $ConfigPath" -Level Ignore
+            if ($script:CurrentLogPath) { Write-SOKLog "Config loaded: $ConfigPath" -Level Ignore }
+            else                         { Write-Verbose "Config loaded: $ConfigPath" }
         }
-        catch { Write-SOKLog "Config parse failed ($ConfigPath) — using defaults: $_" -Level Warn }
+        catch {
+            if ($script:CurrentLogPath) { Write-SOKLog "Config parse failed ($ConfigPath) — using defaults: $_" -Level Warn }
+            else                         { Write-Verbose "Config parse failed ($ConfigPath) — using defaults: $_" }
+        }
     }
-    else { Write-SOKLog "No config file at $ConfigPath — using defaults" -Level Ignore }
+    else {
+        if ($script:CurrentLogPath) { Write-SOKLog "No config file at $ConfigPath — using defaults" -Level Ignore }
+        else                         { Write-Verbose "No config file at $ConfigPath — using defaults" }
+    }
     return $defaults
 }
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
 # ═══════════════════════════════════════════════════════════════
-$script:CurrentLogPath = $null
-$script:CurrentLogDir  = $null
+# Cluster-A MEDIUM fix 2026-04-21: preserve state across `Import-Module -Force`
+# reimports. Unconditional reset at module load would silently redirect ongoing
+# log output to a new path when a caller re-imports the module mid-run.
+if ($null -eq $script:CurrentLogPath) { $script:CurrentLogPath = $null }
+if ($null -eq $script:CurrentLogDir)  { $script:CurrentLogDir  = $null }
 
 function Get-ScriptLogDir {
     [CmdletBinding()]
@@ -361,14 +442,65 @@ function Save-SOKHistory {
     # Rolling aggregate (ring buffer, capped at $HISTORY_CAP entries)
     $aggPath  = Join-Path $histDir "${ScriptName}_history.json"
     $aggLock  = "$aggPath.lock"
-    $lockStart = Get-Date
-    while (Test-Path $aggLock) {
-        if (((Get-Date) - $lockStart).TotalSeconds -gt $script:LOCK_TIMEOUT_SEC) {
-            Remove-Item $aggLock -Force -ErrorAction Continue; break
+
+    # 2026-04-22 concurrency fix: prior lock was ADVISORY — Test-Path then Set-Content
+    # allowed a race where two processes both saw no lock, both wrote their own lock
+    # file, and then both wrote the aggregate simultaneously (JSON corruption + lost
+    # history entries). Replaced with an actual exclusive file handle via FileStream
+    # CreateNew + FileShare None. Operating-system-level guarantee: if the handle
+    # creates successfully, no other process holds one; second concurrent attempt
+    # fails with IOException, and the polling loop retries until the owner releases.
+    # Stale-lock recovery (lock file older than $LOCK_TIMEOUT_SEC or owning PID dead):
+    # force-remove the stale lock and retry, since a genuine exclusive lock can only
+    # be held by a living process.
+    $lockHandle = $null
+    $lockStart  = Get-Date
+    while ($null -eq $lockHandle) {
+        try {
+            $lockHandle = [System.IO.FileStream]::new(
+                $aggLock,
+                [System.IO.FileMode]::CreateNew,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::None
+            )
+            # Write our PID + timestamp so a human debugger can tell who owns the lock
+            $ownerBytes = [System.Text.Encoding]::UTF8.GetBytes("$PID`:$(Get-Date -Format $script:DateISO)")
+            $lockHandle.Write($ownerBytes, 0, $ownerBytes.Length)
+            $lockHandle.Flush()
+        } catch [System.IO.IOException] {
+            # Lock taken by another process. Check if it's stale (file age > timeout OR
+            # PID dead) and force-remove in that case. Otherwise poll.
+            # Cluster-A MEDIUM fix 2026-04-21: distinguish "truly stale" (PID dead)
+            # from "slow" (PID alive, file old). Prior code force-removed on age alone,
+            # which could race a hung-but-alive lock holder and create an infinite
+            # force-remove-then-fail loop until the outer timeout.
+            if (Test-Path $aggLock) {
+                $lockAge = ((Get-Date) - (Get-Item $aggLock -ErrorAction SilentlyContinue).LastWriteTime).TotalSeconds
+                $isDead = $false
+                try {
+                    $ownerStr = Get-Content $aggLock -Raw -ErrorAction SilentlyContinue
+                    if ($ownerStr -match '^(\d+):') {
+                        $ownerPid = [int]$Matches[1]
+                        if (-not (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue)) { $isDead = $true }
+                    }
+                } catch {}
+                if ($isDead) {
+                    # Safe to force-remove — prior owner is gone
+                    Remove-Item $aggLock -Force -ErrorAction SilentlyContinue
+                } elseif ($lockAge -gt $script:LOCK_TIMEOUT_SEC) {
+                    # PID still alive but lock is old — owner is hung, not dead.
+                    # Do NOT force-remove; wait for outer timeout to surface the block
+                    # to the caller with a clear message rather than racing the owner.
+                    Write-Verbose "SOK-Common: $aggLock is old ($([int]$lockAge)s) but owner PID is alive — waiting for outer timeout rather than force-removing."
+                }
+            }
+            if (((Get-Date) - $lockStart).TotalSeconds -gt $script:LOCK_TIMEOUT_SEC) {
+                Write-Warning "Save-SOKHistory: could not acquire $aggLock within ${script:LOCK_TIMEOUT_SEC}s — aggregate history write SKIPPED for $ScriptName"
+                return
+            }
+            Start-Sleep -Milliseconds $script:LOCK_POLL_MS
         }
-        Start-Sleep -Milliseconds $script:LOCK_POLL_MS
     }
-    Set-Content -Path $aggLock -Value $PID -Force
     try {
         # v4.6.1: $history built as explicit List[object] to sidestep the PowerShell
         # "$var = if (...) { @(single) }" gotcha where 1-element arrays get unwrapped
@@ -409,7 +541,14 @@ function Save-SOKHistory {
         # what made the read path fragile to begin with.
         $history.ToArray() | ConvertTo-Json -Depth 8 -AsArray | Set-Content -Path $aggPath -Force -Encoding UTF8
     }
-    finally { Remove-Item $aggLock -Force -ErrorAction Continue }
+    finally {
+        # 2026-04-22: release the exclusive handle BEFORE deleting the lockfile;
+        # otherwise the Remove-Item would fail (handle still open, Windows refuses).
+        if ($null -ne $lockHandle) {
+            try { $lockHandle.Dispose() } catch {}
+        }
+        Remove-Item $aggLock -Force -ErrorAction Continue
+    }
 
     if (-not $AggregateOnly) { Write-SOKLog "History: $filePath" -Level Ignore }
 }
@@ -460,6 +599,52 @@ function Test-IsAdmin {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+# ═══════════════════════════════════════════════════════════════
+# REAL USER PROFILE RESOLUTION (H-8 fix 2026-04-21)
+# ═══════════════════════════════════════════════════════════════
+# Resolve-RealUserProfile: Returns the path of the real interactive user's profile.
+# Used by SYSTEM-context env-remap blocks to replace hardcoded 'C:\Users\shelc'.
+#
+# Why: Substrate Thesis says "plug E: into new machine, run BareMetal, run
+# BackupRestructure → restored." Hardcoded usernames break this — recovery on a
+# differently-named account fails silently because $env:USERPROFILE points at
+# a non-existent path. Querying Win32_UserProfile finds the actual interactive
+# user regardless of name.
+#
+# Filter logic:
+#   - Special = false: excludes systemprofile, NetworkService, LocalService, etc.
+#   - LocalPath -notmatch 'systemprofile|NetworkService|LocalService|defaultuser': belt-and-suspenders
+#   - Loaded preferred but not required (some profiles are unloaded but valid)
+#   - Most-recently-used wins via LastUseTime descending
+#
+# Fallback: if no real profile found (e.g., fresh substrate with no user logins
+# yet), return $null. Callers should treat $null as "use bootstrap default" and
+# log a warning.
+function Resolve-RealUserProfile {
+    [CmdletBinding()]
+    param(
+        [string]$Fallback = $null  # If query returns nothing, return this instead of $null
+    )
+    # 2026-04-22 polish: renamed local var $profile → $userProfile to avoid shadowing
+    # the PowerShell $profile automatic variable. Shadowing was localized to this
+    # function (no leak) but confusing to readers.
+    try {
+        $userProfile = Get-CimInstance -ClassName Win32_UserProfile -ErrorAction Stop |
+            Where-Object {
+                $_.Special -eq $false -and
+                $_.LocalPath -notmatch '(?i)systemprofile|NetworkService|LocalService|defaultuser'
+            } |
+            Sort-Object LastUseTime -Descending |
+            Select-Object -First 1
+        if ($userProfile -and $userProfile.LocalPath -and (Test-Path $userProfile.LocalPath)) {
+            return $userProfile.LocalPath
+        }
+    } catch {
+        # CIM unavailable (very-early bootstrap) — fall through to fallback
+    }
+    return $Fallback
+}
+
 function Get-SizeKB { param([long]$Bytes); return [math]::Round($Bytes / 1KB, 2) }
 
 function Get-HumanSize {
@@ -497,8 +682,16 @@ function Invoke-WithTimeout {
     if (-not (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)) {
         Import-Module ThreadJob -ErrorAction SilentlyContinue
         if (-not (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)) {
-            # Hard fallback to Start-Job with manual PATH injection
-            Write-SOKLog "ThreadJob not available — falling back to Start-Job with PATH injection." -Level Warn
+            # Hard fallback to Start-Job with manual PATH injection.
+            # Cluster-A HIGH caller-contract note 2026-04-21: Start-Job spawns a NEW
+            # PROCESS. Scriptblocks passed here must be SELF-CONTAINED — do NOT rely
+            # on variable closures from the caller's scope. Closure variables serialize
+            # to $null across process boundaries and the job runs with unbound refs,
+            # producing silent empty-output. To pass data in, either: (a) reference it
+            # through $using:var which we already do below for $jobPath+$ScriptBlock,
+            # or (b) pass parameters explicitly via -ArgumentList. ThreadJob (preferred
+            # path above) shares the runspace and doesn't have this constraint.
+            Write-SOKLog "ThreadJob not available — falling back to Start-Job with PATH injection (scriptblock must be self-contained; see Invoke-WithTimeout caller-contract comment)." -Level Warn
             $jobPath = $env:PATH
             $job = Start-Job -ScriptBlock {
                 $env:PATH = $using:jobPath
@@ -537,8 +730,20 @@ function Move-ToDeprecated {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$FilePath)
     if (-not (Test-Path $FilePath)) { return }
+    # Cluster-A MEDIUM fix 2026-04-21: reject directory inputs explicitly — the
+    # param name implies files, and current callers pass Get-ChildItem -File output.
+    # A future caller passing a directory would silently get recursive move semantics
+    # that may not be intended. Fail-loud is safer than silent-surprise.
+    $itm = Get-Item -LiteralPath $FilePath -ErrorAction SilentlyContinue
+    if ($itm -and $itm.PSIsContainer) {
+        throw "Move-ToDeprecated: $FilePath is a directory; this function is file-only. Use Move-Item directly for directories, or wrap into an explicit helper."
+    }
     $parentDir     = Split-Path $FilePath -Parent
-    $deprecatedDir = Join-Path $parentDir 'deprecated'
+    # Cluster-A MEDIUM fix 2026-04-21: project convention per CLAUDE.md §2 is
+    # 'Deprecated\' (capital D). Prior 'deprecated\' (lowercase) was inconsistent
+    # with the rest of the project and would mismatch on case-sensitive filesystems
+    # (WSL mounts, SMB shares). All tacticals should now agree on 'Deprecated\'.
+    $deprecatedDir = Join-Path $parentDir 'Deprecated'
     if (-not (Test-Path $deprecatedDir)) { New-Item -Path $deprecatedDir -ItemType Directory -Force | Out-Null }
     $fileName = Split-Path $FilePath -Leaf
     $destPath = Join-Path $deprecatedDir $fileName
@@ -584,10 +789,13 @@ function Get-LatestLog {
     if (-not (Test-Path $logDir)) { return $null }
     $latest = Get-ChildItem -Path $logDir -Filter $Filter -ErrorAction SilentlyContinue |
         Where-Object {
+            # Cluster-A LOW fix 2026-04-21: added .tmp to excluded-suffix list to
+            # avoid selecting a partial-write from another tool as "latest log."
             $_.Name -notmatch '_history\.json$' -and
             $_.Name -notmatch '\.lock$' -and
             $_.Name -notmatch '\.bak$' -and
-            $_.Name -notmatch '\.corrupted_'
+            $_.Name -notmatch '\.corrupted_' -and
+            $_.Name -notmatch '\.tmp$'
         } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $latest) { return $null }
@@ -606,7 +814,8 @@ function Get-LatestLogPath {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$ScriptName, [string]$Filter = '*.json')
     $result = Get-LatestLog -ScriptName $ScriptName -Filter $Filter
-    return if ($result) { $result.Path } else { $null }
+    if ($result) { return $result.Path }
+    return $null
 }
 
 function Invoke-SOKPrerequisite {
@@ -616,6 +825,18 @@ function Invoke-SOKPrerequisite {
         [int]$StaleHours   = $script:DEFAULT_STALE_HOURS,
         [int]$NestingDepth = 0
     )
+    # 2026-04-22 defensive fix: if caller didn't pass -NestingDepth (stays at
+    # default 0), inherit from $env:SOK_NESTING_DEPTH set by a parent invocation.
+    # Without this, recursive sub-script invocations always saw depth=0 even
+    # when 3+ levels deep, making $PREREQUISITE_NESTING_LIMIT unenforceable.
+    # The env var is set on line below the $scriptPath invocation and cleared
+    # only at the top-level finally.
+    if ($NestingDepth -eq 0 -and $env:SOK_NESTING_DEPTH) {
+        $envDepth = 0
+        if ([int]::TryParse($env:SOK_NESTING_DEPTH, [ref]$envDepth)) {
+            $NestingDepth = $envDepth
+        }
+    }
     if ($NestingDepth -ge $script:PREREQUISITE_NESTING_LIMIT) {
         Write-SOKLog "Prerequisite nesting limit ($script:PREREQUISITE_NESTING_LIMIT) reached — skipping" -Level Annotate
         return
@@ -654,6 +875,18 @@ function Invoke-SOKPrerequisite {
             }
             catch { Write-SOKLog "Prerequisite $prereqName FAILED: $_" -Level Error }
             finally {
+                # Cluster-A MEDIUM fix 2026-04-21: always clear SOK_NESTING_DEPTH in
+                # this nested invocation's scope so a throw inside the prereq doesn't
+                # leak an incorrect depth into the parent's next iteration or into
+                # subsequent fresh shell invocations (env-var persists across Start-Process
+                # boundaries when inherited). The top-level clears at $NestingDepth -eq 0;
+                # this inner clear belt-and-suspenders the cleanup.
+                if ($NestingDepth -eq 0) {
+                    Remove-Item Env:\SOK_NESTING_DEPTH -ErrorAction SilentlyContinue
+                    Remove-Item Env:\SOK_NESTED -ErrorAction SilentlyContinue
+                }
+            }
+            finally {
                 if ($NestingDepth -eq 0) {
                     Remove-Item Env:\SOK_NESTED        -ErrorAction SilentlyContinue
                     Remove-Item Env:\SOK_NESTING_DEPTH -ErrorAction SilentlyContinue
@@ -672,6 +905,7 @@ Export-ModuleMember -Function @(
     'Format-SOKAge'; 'New-SOKStateDict'; 'Invoke-WithTimeout'
     'Remove-StaleLogFiles'; 'Move-ToDeprecated'
     'Get-LatestLog'; 'Get-LatestLogPath'; 'Get-ScriptLogDir'; 'Invoke-SOKPrerequisite'
+    'Resolve-RealUserProfile'
 )
 Export-ModuleMember -Variable @(
     'SOKVersion'; 'SOKName'; 'ProjectRoot'; 'ScriptBase'; 'SOKRoot'

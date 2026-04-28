@@ -78,7 +78,7 @@ if (Get-Command Show-SOKBanner -ErrorAction SilentlyContinue) {
 
 # ─── INITIALIZATION ─────────────────────────────────────
 
-$logDir = 'C:\Users\shelc\Documents\SOK\Logs\CompressSignal'
+$logDir = 'C:\Users\shelc\Documents\Journal\Projects\SOK\Logs\CompressSignal'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $logFile = Join-Path $logDir "CompressSignal_${timestamp}.log"
@@ -260,9 +260,23 @@ foreach ($r in $results) {
 
 if (-not $SkipClean) {
     Log "PHASE 5: Cleaning staging area..." -Level Section
+    # C-M-2 fix 2026-04-21: deprecate-never-delete per CLAUDE.md §2. Hard
+    # Remove-Item destroys the source before any 30-day verification window;
+    # if SkipVerify=$true was used, an undetected 7z corruption means data is
+    # gone. Move to a sibling Deprecated/ subdir; operator can clean those
+    # manually once archives are confirmed good on E:.
     try {
-        Remove-Item $StagingPath -Recurse -Force
-        Log "  Staging area removed: $StagingPath" -Level Success
+        $stagingParent = Split-Path $StagingPath -Parent
+        $stagingLeaf   = Split-Path $StagingPath -Leaf
+        $deprecatedDir = Join-Path $stagingParent 'Deprecated'
+        $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $deprecatedTarget = Join-Path $deprecatedDir "${stagingLeaf}_${stamp}"
+        if (-not (Test-Path $deprecatedDir)) {
+            New-Item -Path $deprecatedDir -ItemType Directory -Force | Out-Null
+        }
+        Move-Item -Path $StagingPath -Destination $deprecatedTarget -Force -ErrorAction Stop
+        Log "  Staging area moved to Deprecated\: $deprecatedTarget" -Level Success
+        Log "  Operator: review + delete Deprecated\ contents after verifying archives on E: (suggested 30-day window)" -Level Annotate
     } catch {
         Log "  Cleanup failed: $_" -Level Warn
     }

@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     SOK-BareMetal v5.0.0 — Exhaustive Bare-Metal Environment Restoration
-    Host: CLAY_PC (Zero-State Assumption) | D: & E: Disconnected
+    Host: <HOST> (Zero-State Assumption) | D: & E: Disconnected
 .DESCRIPTION
     Executes a complete reconstruction of the operator environment.
     Purges hostile applications. Installs 150+ tools across Choco, Winget, Scoop, Pip, NPM, and PSModules.

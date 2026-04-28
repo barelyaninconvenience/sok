@@ -28,7 +28,11 @@
 [CmdletBinding()]
 param(
     [switch]$DryRun,
-    [string]$ExternalDrive = 'E:'
+    [string]$ExternalDrive = 'E:',
+    # H-5 fix 2026-04-21: opt-in switches for aux-app kills that risk user-data
+    # side-effects. Defaults preserve drafts / open PDFs / synced sessions.
+    [switch]$KillOutlook,        # Outlook kill forces re-login + full mailbox re-sync + loses unsaved drafts
+    [switch]$KillAcrobat         # Acrobat kill loses auto-save state for cloud-open PDFs
 )
 
 #Requires -Version 7.0
@@ -64,11 +68,15 @@ if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
 }
 
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# H-8 fix 2026-04-21: Substrate Thesis portability via Resolve-RealUserProfile.
 if ($env:USERPROFILE -like '*systemprofile*') {
-    $env:USERPROFILE  = 'C:\Users\shelc'
-    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
-    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
-    Write-SOKLog '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
+    Write-SOKLog "[SYSTEM-CONTEXT] Remapped profile env vars to $realProfile" -Level Warn
 }
 
 Write-SOKLog "SOK-Cleanup — $(if($DryRun){'DRY RUN'}else{'LIVE'}) — $(Get-Date -Format 'ddMMMyyyy HH:mm')" -Level Section
@@ -88,6 +96,15 @@ $movedCount = 0; $movedKB = 0; $deletedCount = 0; $deletedKB = 0; $failedCount =
 # ═══════════════════════════════════════════════════════════════
 Write-SOKLog 'PHASE 1: RELEASING FILE LOCKS' -Level Section
 
+# H-5 fix 2026-04-21: Outlook + AcroCEF + Acrobat removed from default kill list.
+#   - Outlook kill forces re-login + full mailbox re-sync + loses unsaved drafts
+#     (this was already documented in the cache-delete comments at lines 146-147,
+#     but the process-kill list itself contradicted the stated design intent)
+#   - Acrobat/AcroCEF can auto-save PDFs open from cloud storage; killing loses state
+# Both are available via -KillOutlook / -KillAcrobat opt-in switches.
+# C-1 consistency (2026-04-21): $config.ProcessOptimizer.ProtectedProcesses now
+# consulted so any process Clay protected in config is skipped, matching
+# SOK-PRESENT.ps1 + SOK-METICUL.OS.ps1 behavior.
 $processesToKill = @(
     @{ Name = 'chrome';        Label = 'Google Chrome' }
     @{ Name = 'msedge';        Label = 'Microsoft Edge' }
@@ -97,12 +114,35 @@ $processesToKill = @(
     @{ Name = 'GitKraken';     Label = 'GitKraken' }
     @{ Name = 'Cypress';       Label = 'Cypress' }
     @{ Name = 'Insomnia';      Label = 'Insomnia' }
-    @{ Name = 'Outlook';       Label = 'Outlook' }
-    @{ Name = 'AcroCEF';       Label = 'Acrobat CEF' }
-    @{ Name = 'Acrobat';       Label = 'Acrobat' }
 )
+if ($KillOutlook) {
+    $processesToKill += @{ Name = 'Outlook'; Label = 'Outlook' }
+    Write-SOKLog '  -KillOutlook: Outlook will be stopped (re-login + mailbox re-sync expected)' -Level Warn
+}
+if ($KillAcrobat) {
+    $processesToKill += @{ Name = 'AcroCEF';  Label = 'Acrobat CEF' }
+    $processesToKill += @{ Name = 'Acrobat'; Label = 'Acrobat' }
+    Write-SOKLog '  -KillAcrobat: Acrobat processes will be stopped (cloud-PDF auto-save state may be lost)' -Level Warn
+}
+
+# Load config-protected list (ProcessOptimizer.ProtectedProcesses — case-normalized)
+$cfgProtected = @()
+if (Get-Command Get-SOKConfig -ErrorAction SilentlyContinue) {
+    try {
+        $cfg = Get-SOKConfig
+        $cfgProtected = @($cfg.ProcessOptimizer.ProtectedProcesses) |
+            Where-Object { $_ } |
+            ForEach-Object { $_.ToString().ToLower() }
+    } catch {
+        Write-SOKLog "  Could not load sok-config for protected-process list: $_" -Level Debug
+    }
+}
 
 foreach ($proc in $processesToKill) {
+    if ($proc.Name.ToLower() -in $cfgProtected) {
+        Write-SOKLog "  SKIP (config-protected): $($proc.Label)" -Level Annotate
+        continue
+    }
     $running = Get-Process -Name $proc.Name -ErrorAction SilentlyContinue
     if ($running) {
         if ($DryRun) {
@@ -259,8 +299,17 @@ foreach ($item in $toOffload) {
             Write-SOKLog "  Robocopy OK (exit: $roboExit)" -Level Success
 
             # Create junction
+            # C-5 fix 2026-04-21: replaced SilentlyContinue with try/Stop/catch so
+            # post-/MOVE removal failures (file locks, ACL issues) are surfaced rather
+            # than silently swallowed. Source-still-exists gate is preserved as the
+            # mklink-prerequisite check; on partial /MOVE the operator now sees both
+            # the removal error AND the junction-skip warning.
             if (Test-Path $item.Path) {
-                Remove-Item -Path $item.Path -Recurse -Force -ErrorAction SilentlyContinue
+                try {
+                    Remove-Item -Path $item.Path -Recurse -Force -ErrorAction Stop
+                } catch {
+                    Write-SOKLog "  Source removal failed: $($_.Exception.Message) — junction skipped (manual review needed at $($item.Path))" -Level Error
+                }
             }
             if (-not (Test-Path $item.Path)) {
                 $jResult = cmd /c "mklink /J `"$($item.Path)`" `"$destPath`"" 2>&1
@@ -268,11 +317,11 @@ foreach ($item in $toOffload) {
                     Write-SOKLog "  Junction: $($item.Path) → $destPath" -Level Success
                 }
                 else {
-                    Write-SOKLog "  Junction FAILED" -Level Error
+                    Write-SOKLog "  Junction FAILED ($jResult)" -Level Error
                 }
             }
             else {
-                Write-SOKLog "  Source not fully removed — junction skipped" -Level Warn
+                Write-SOKLog "  Source not fully removed — junction skipped (data preserved at source $($item.Path) and dest $destPath; operator must reconcile)" -Level Warn
             }
 
             $movedCount++; $movedKB += $sizeKB

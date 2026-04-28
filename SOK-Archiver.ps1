@@ -108,7 +108,7 @@ foreach ($folder in $SourceFolders) {
     if (Test-Path $folder) {
         Write-Progress -Activity "SOK Archiver" -Status "Scanning: $folder" -PercentComplete (($folderCount / $SourceFolders.Count) * 100)
         try {
-            $found = Get-ChildItem -Path $folder -Recurse -File -ErrorAction SilentlyContinue |
+            $found = Get-ChildItem -Path $folder -Recurse -File -Force -ErrorAction SilentlyContinue |
                 Where-Object { $_.Extension -match $Extensions }
             $manifest += $found
             Write-SOKLog "  $folder — $($found.Count) files" -Level Ignore
@@ -123,8 +123,12 @@ foreach ($folder in $SourceFolders) {
 }
 Write-Progress -Activity "SOK Archiver" -Completed
 
-# Exclude previous archives and sort deterministically
-$manifest = $manifest | Where-Object { $_.Name -notmatch $BaseName } | Sort-Object FullName
+# HIGH-5 fix 2026-04-21: -notmatch parses $BaseName as regex, breaking on regex
+# metacharacters in the basename. Also excludes legitimate files whose name
+# contains BaseName as a substring (e.g., a user file 'My_SOK_Archive_notes.md'
+# would be wrongly excluded). Switch to -notlike with the canonical archive
+# filename pattern to scope the exclusion to actual archive output files only.
+$manifest = $manifest | Where-Object { $_.Name -notlike "${BaseName}_v*.txt" -and $_.Name -notlike "${BaseName}_v*.zip" } | Sort-Object FullName
 
 $totalSizeKB = [math]::Round(($manifest | Measure-Object -Property Length -Sum).Sum / 1KB, 2)
 Write-SOKLog "Manifest: $($manifest.Count) files, $totalSizeKB KB" -Level Success
@@ -189,6 +193,11 @@ try {
         $reader = $null
         try {
             $reader = [System.IO.StreamReader]::new($file.FullName)
+            # LOW-3 fix 2026-04-22: PS7 idiom would be `$null -ne ($line = $reader.ReadLine())`
+            # to dodge the PSPossibleIncorrectComparisonWithNull analyzer warning. Kept the
+            # original left-side comparison because the null SEMANTIC here is "end of stream,"
+            # not "null-check" — the LHS is the assignment's result, and the loop terminates
+            # on it being $null. Rewriting reversed would obscure the EOF intent.
             while (($line = $reader.ReadLine()) -ne $null) {
                 $writer.WriteLine($line)
             }

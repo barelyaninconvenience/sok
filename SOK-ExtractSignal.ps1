@@ -31,8 +31,8 @@
     Skip hash-based deduplication (faster but may include duplicates).
 
 .NOTES
-    Author: Claude + Clay
-    Date: 2026-04-08
+    Author: S. Clay Caddell
+    Date: 2026-04-08 (L-9 style normalization: 2026-04-22 — "Author: Claude + Clay" was the only SOK script not using Clay's canonical attribution; now consistent)
     Domain: Utility — one-shot E:\ restructure preparation
     Runtime: May take 30-60 min on 475 GB with deep nesting
     REQUIRES: Administrator (for accessing all backup paths)
@@ -64,6 +64,12 @@ $signalExtensions = @(
     # Archives — EXCLUDED from staging (already compressed, leave in place on E:\)
     # '.7z','.zip','.rar','.tar','.gz','.bz2',
     # Specialty
+    # L-2 (Cluster C) note 2026-04-22: .ost and .pst can reach 20-50 GB each
+    # (Outlook data files). Currently staged as Signal; on a deep-nested tree
+    # with multiple profiles, Phase 3 could fill C:\Temp_Staging faster than
+    # expected. If the E:\ restructure ever hits C:-space pressure, revisit
+    # splitting .ost/.pst into a $bulkySignal list with operator confirm gate.
+    # Kept inline for now since current backup set is known-small on these exts.
     '.psd','.ai','.svg','.msg','.eml','.ost','.pst','.kml','.kmz','.gpx',
     # GIS
     '.shp','.dbf','.prj','.shx','.gdb','.mxd','.aprx','.lyr','.lyrx','.mpk',
@@ -98,7 +104,7 @@ $script:StartTime = Get-Date
 
 # ─── INITIALIZATION ─────────────────────────────────────
 
-$logDir = 'C:\Users\shelc\Documents\SOK\Logs\ExtractSignal'
+$logDir = 'C:\Users\shelc\Documents\Journal\Projects\SOK\Logs\ExtractSignal'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $logFile = Join-Path $logDir "ExtractSignal_${timestamp}.log"
@@ -181,18 +187,42 @@ if (-not $SkipDedup -and $signalFiles.Count -gt 0) {
     $uniqueFiles = [System.Collections.Generic.List[PSObject]]::new()
     $hashProgress = 0
 
-    # ── Size-based triage: skip hashing for very large (unique) and very small (trivial) files ──
+    # H-3 fix 2026-04-21: two-tier triage for large files instead of blanket auto-unique.
+    # Prior behavior: files >500MB added directly to uniqueFiles. Camera RAW/MOV backups
+    # with identical size would both be staged, double-consuming C:\Temp_Staging and
+    # breaking the dedup contract. New: group large files by size first; a same-size
+    # group gets forwarded to hash dedup (ensures correctness on the worst-case twin-file
+    # scenario). Small (<1KB) files remain auto-unique since hashing them costs more
+    # than the dedup they'd yield.
     $hashCandidates = [System.Collections.Generic.List[PSObject]]::new()
     $autoUnique = 0
+    $largeFiles = [System.Collections.Generic.List[PSObject]]::new()
     foreach ($f in $signalFiles) {
-        if ($f.Size -gt 500MB -or $f.Size -lt 1KB) {
+        if ($f.Size -lt 1KB) {
             $uniqueFiles.Add($f)
             $autoUnique++
+        } elseif ($f.Size -gt 500MB) {
+            $largeFiles.Add($f)
         } else {
             $hashCandidates.Add($f)
         }
     }
-    Log "  Size triage: $autoUnique files auto-unique (>500MB or <1KB), $($hashCandidates.Count) to hash"
+    # Large-file second pass: group by size. Solo sizes skip hashing (auto-unique
+    # since no file can dedup against itself). Multi-file sizes forward to hash
+    # pool to disambiguate true duplicates from same-size-but-different content.
+    $largeGroups = $largeFiles | Group-Object Size
+    $largeAutoUnique = 0
+    $largeForHash = 0
+    foreach ($grp in $largeGroups) {
+        if ($grp.Count -eq 1) {
+            $uniqueFiles.Add($grp.Group[0])
+            $largeAutoUnique++
+        } else {
+            foreach ($gf in $grp.Group) { $hashCandidates.Add($gf); $largeForHash++ }
+        }
+    }
+    $autoUnique += $largeAutoUnique
+    Log "  Size triage: $autoUnique auto-unique (<1KB or solo-size-large) | $largeForHash large-files-forwarded-to-hash (same-size groups) | $($hashCandidates.Count) total to hash"
 
     # ── Parallel hashing with ForEach-Object -Parallel (PS7+) ──
     $hashThrottle = [Math]::Min(8, [Environment]::ProcessorCount - 2)

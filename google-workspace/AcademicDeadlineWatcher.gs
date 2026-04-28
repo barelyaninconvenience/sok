@@ -20,7 +20,7 @@
 // === CONFIGURATION ===
 var CONFIG = {
   canvasCalendarId: 'ngogo45475nlor5d2p3t3avfh4his7cp@import.calendar.google.com',
-  recipientEmail: 'shelcaddell@gmail.com',
+  recipientEmail: 'CHANGEME@example.com',  // REPLACE with your address before deploying
   // ADHD time multiplier: how much longer things actually take vs. estimate
   // 1.5x is a good ADHD baseline. Adjust based on experience.
   timeMultiplier: 1.5,

@@ -1,4 +1,4 @@
-# C: DRIVE RESTRUCTURING PLAN v2 — CLAY_PC
+# C: DRIVE RESTRUCTURING PLAN v2 — <HOST>
 # Generated: 27Mar2026 | C: 62.8% used (626 GB / 999 GB)
 # Operator decisions applied 27Mar2026
 

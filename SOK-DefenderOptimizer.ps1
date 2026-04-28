@@ -45,11 +45,15 @@ if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
 }
 
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# H-8 fix 2026-04-21: Substrate Thesis portability via Resolve-RealUserProfile.
 if ($env:USERPROFILE -like '*systemprofile*') {
-    $env:USERPROFILE  = 'C:\Users\shelc'
-    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
-    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
-    Write-SOKLog '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
+    Write-SOKLog "[SYSTEM-CONTEXT] Remapped profile env vars to $realProfile" -Level Warn
 }
 
 if ($DryRun) { Write-SOKLog '*** DRY RUN ***' -Level Warn }
@@ -89,6 +93,27 @@ else {
 # ═══════════════════════════════════════════════════════════════
 Write-SOKLog 'PERFORMANCE CONFIGURATION' -Level Section
 
+# MEDIUM-4 fix 2026-04-21: snapshot prior preferences before Set-MpPreference
+# changes. Gives a restore path if these optimizations regress something
+# (e.g., a workload relies on higher CPU budget for scans).
+$preferencesToSnapshot = @(
+    'ScanAvgCPULoadFactor', 'EnableLowCpuPriority', 'DisableArchiveScanning',
+    'ScanScheduleQuickScanTime', 'MAPSReporting', 'SubmitSamplesConsent'
+)
+try {
+    $priorPrefs = Get-MpPreference | Select-Object $preferencesToSnapshot
+    if (-not $DryRun -and $logPath) {
+        $rollbackPath = [IO.Path]::ChangeExtension($logPath, '.defender-rollback.json')
+        $priorPrefs | ConvertTo-Json -Depth 4 | Set-Content -Path $rollbackPath -Encoding utf8
+        Write-SOKLog "Prior preferences snapshot: $rollbackPath" -Level Annotate
+        Write-SOKLog "  Restore via: (Get-Content '$rollbackPath' | ConvertFrom-Json).PSObject.Properties | ForEach-Object { Set-MpPreference -`$(`$_.Name) `$_.Value }" -Level Debug
+    } elseif ($DryRun) {
+        Write-SOKLog "[DRY] Would snapshot 6 current Defender preferences before modification" -Level Debug
+    }
+} catch {
+    Write-SOKLog "Preferences snapshot failed (non-fatal): $_" -Level Warn
+}
+
 $settings = @(
     @{ Cmd = { Set-MpPreference -ScanAvgCPULoadFactor 20 };                Desc = 'CPU load factor: 20%' }
     @{ Cmd = { Set-MpPreference -EnableLowCpuPriority $true };             Desc = 'Low CPU priority: enabled' }
@@ -118,7 +143,7 @@ Write-SOKLog 'PATH EXCLUSIONS' -Level Section
 
 $exclusionPaths = @(
     "$env:USERPROFILE\Documents\Journal\Projects"
-    "$env:USERPROFILE\Documents\SOK"
+    "$env:USERPROFILE\Documents\Journal\Projects\SOK"
     "$env:USERPROFILE\.cargo"
     "$env:USERPROFILE\.npm"
     "$env:USERPROFILE\.pyenv"
@@ -176,4 +201,18 @@ if ($status) {
         DefVersion         = $status.AntivirusSignatureVersion
         ExclusionsAdded    = $added
     }) -Title 'DEFENDER OPTIMIZED'
+}
+
+# LOW-7 fix 2026-04-22: DefenderOptimizer was the only SOK script without a
+# Save-SOKHistory call, preventing staleness-based prereq checks downstream
+# (Maintenance/Backup/SpaceAudit/LiveScan/Offload all declare ?SOK-DefenderOptimizer
+# as an optional prereq — without a history entry, "freshness" defaults to stale).
+if (Get-Command Save-SOKHistory -ErrorAction SilentlyContinue) {
+    Save-SOKHistory -ScriptName 'SOK-DefenderOptimizer' -RunData @{
+        ExclusionsAdded    = $added
+        RealTimeProtection = if ($status) { $status.RealTimeProtectionEnabled } else { $null }
+        QuickScanAgeDays   = if ($status) { $status.QuickScanAge } else { $null }
+        DefVersion         = if ($status) { $status.AntivirusSignatureVersion } else { $null }
+        DryRun             = $DryRun.IsPresent
+    }
 }

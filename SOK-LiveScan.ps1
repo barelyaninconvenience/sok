@@ -20,8 +20,8 @@ param(
     # LiveScan is inherently slow (30+ min full C:\); DryRun confirms invocability.
     [switch]$DryRun,
     [string]$SourcePath  = 'C:\',
-    [string]$OutJson     = "$env:USERPROFILE\Documents\SOK\Logs\LiveScan\LiveScan_$(Get-Date -Format 'yyyyMMdd_HHmmss').json",
-    [string]$ErrorLog    = "$env:USERPROFILE\Documents\SOK\Logs\LiveScan_Errors_$(Get-Date -Format 'yyyyMMdd_HHmmss').log",
+    [string]$OutJson     = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Logs\LiveScan\LiveScan_$(Get-Date -Format 'yyyyMMdd_HHmmss').json",
+    [string]$ErrorLog    = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Logs\LiveScan_Errors_$(Get-Date -Format 'yyyyMMdd_HHmmss').log",
     [switch]$DirsOnly,         # Only output directories (much faster, smaller output)
     [int]$MinSizeKB      = 0,  # Skip files smaller than this
     [switch]$ExcludeNoisyDirs  # Flag to drop massive system folders
@@ -29,25 +29,36 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
+# HIGH-9 fix 2026-04-21: module load moved BEFORE env-remap so Resolve-RealUserProfile
+# is available. Also captures the ORIGINAL $env:USERPROFILE before mutation so the
+# regex-replace on $OutJson/$ErrorLog (bound at param-time to the systemprofile
+# path) uses the correct old-value regex. Prior ordering was brittle — a future
+# refactor moving the regex-replace above the env-var assignment would have
+# double-replaced or missed entirely.
+$modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'
+if (-not (Test-Path $modulePath)) { $modulePath = 'C:\Users\shelc\Documents\Journal\Projects\scripts\common\SOK-Common.psm1' }
+$_hasCommon = $false
+if (Test-Path $modulePath) { Import-Module $modulePath -Force; $_hasCommon = $true }
+
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# H-8 + HIGH-9 fix 2026-04-21: capture original USERPROFILE first; resolve real
+# profile via Resolve-RealUserProfile (Substrate Thesis portability); then rewrite
+# the param-bound paths and env vars in a fixed order.
 if ($env:USERPROFILE -like '*systemprofile*') {
-    $actualProfile = 'C:\Users\shelc'
-    $OutJson  = $OutJson  -replace [regex]::Escape($env:USERPROFILE), $actualProfile
-    $ErrorLog = $ErrorLog -replace [regex]::Escape($env:USERPROFILE), $actualProfile
-    $env:USERPROFILE  = $actualProfile
-    $env:LOCALAPPDATA = "$actualProfile\AppData\Local"
-    $env:APPDATA      = "$actualProfile\AppData\Roaming"
+    $sysProfileOriginal = $env:USERPROFILE
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $OutJson  = $OutJson  -replace [regex]::Escape($sysProfileOriginal), $realProfile
+    $ErrorLog = $ErrorLog -replace [regex]::Escape($sysProfileOriginal), $realProfile
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
 }
 
 $startTime = Get-Date
 
-# Import Common module
-$modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'
-if (-not (Test-Path $modulePath)) { $modulePath = 'C:\Users\shelc\Documents\Journal\Projects\scripts\common\SOK-Common.psm1' }
-$_hasCommon = $false
-if (Test-Path $modulePath) {
-    Import-Module $modulePath -Force
-    $_hasCommon = $true
+if ($_hasCommon) {
     $logPath = Initialize-SOKLog -ScriptName 'SOK-LiveScan'
     # Prerequisite check (optional — LiveScan can run independently)
     if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {

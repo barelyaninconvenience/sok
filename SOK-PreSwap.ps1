@@ -79,13 +79,53 @@ function Repair-Junction {
             Where-Object { $_.Extension -eq '.exe' } |
             ForEach-Object { try { Rename-Item $_.FullName "$($_.Name).bak" -Force -ErrorAction Stop } catch {} }
     }
-    Remove-Item $Source -Recurse -Force -ErrorAction Continue
-    if (Test-Path $Source) { Log "  $Label`: still locked — needs reboot" -Level Warn; return }
-    if (-not (Test-Path $Target)) { Log "  E: target not found: $Target" -Level Error; return }
+    # C-3 fix 2026-04-21: substrate-recovery data-loss prevention.
+    # Old behavior: Remove-Item $Source ran BEFORE mklink. If E: target was missing
+    # or mklink failed for any reason (permissions, path quirks), the source was
+    # already gone with no recovery. On the substrate-recovery critical path, this
+    # left a system with the source destroyed AND no junction.
+    # New behavior: pre-validate target exists; rename source to .bak (atomic;
+    # preserves data); attempt mklink; on success delete .bak; on failure restore
+    # source from .bak. Net result: no data loss possible from junction failures.
+    if (-not (Test-Path $Target)) {
+        Log "  E: target not found: $Target — ABORT (source preserved)" -Level Error
+        return
+    }
+    $backup = "${Source}.preswap_bak_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    try {
+        Rename-Item -Path $Source -NewName $backup -Force -ErrorAction Stop
+    } catch {
+        Log "  Rename to backup failed: $_ — ABORT (source preserved)" -Level Error
+        return
+    }
     cmd /c "mklink /J `"$Source`" `"$Target`"" 2>$null
-    if ((Get-Item $Source -ErrorAction SilentlyContinue).Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+    $junctionOk = $false
+    $itm = Get-Item $Source -ErrorAction SilentlyContinue
+    if ($itm -and ($itm.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        $junctionOk = $true
+    }
+    if ($junctionOk) {
         Log "  Junction: $Source → $Target" -Level Success
-    } else { Log "  Junction creation FAILED" -Level Error }
+        # Safe to drop backup — junction is verified active
+        try {
+            Remove-Item $backup -Recurse -Force -ErrorAction Stop
+            Log "  Cleanup: removed pre-junction backup $backup" -Level Debug
+        } catch {
+            Log "  WARN: junction succeeded but backup cleanup failed at $backup — manual sweep needed: $_" -Level Warn
+        }
+    } else {
+        Log "  Junction creation FAILED — restoring source from backup" -Level Error
+        # Drop the failed-junction stub if it exists
+        if (Test-Path $Source) {
+            try { cmd /c "rmdir `"$Source`"" 2>$null } catch {}
+        }
+        try {
+            Rename-Item -Path $backup -NewName (Split-Path $Source -Leaf) -Force -ErrorAction Stop
+            Log "  Source restored from backup at $Source" -Level Success
+        } catch {
+            Log "  CRITICAL: source restore failed — manual recovery required from $backup → $Source : $_" -Level Error
+        }
+    }
 }
 
 # Data-driven junction repairs — one line each instead of nested if blocks
@@ -163,9 +203,15 @@ foreach ($c in $cachePaths) {
     } catch { }
     if ($sizeKB -lt 100) { continue }  # Skip tiny ones
 
-    $sizeHuman = if ($sizeKB -gt 1MB) { "$([math]::Round($sizeKB/1MB, 2)) GB" }
-                 elseif ($sizeKB -gt 1KB) { "$([math]::Round($sizeKB/1KB, 2)) MB" }
-                 else { "$([math]::Round($sizeKB, 0)) KB" }
+    # C-M-1 fix 2026-04-21: use Get-HumanSize helper for consistency with
+    # SOK-SpaceAudit / SOK-Offload per CLAUDE.md §2 "KB units throughout".
+    # Prior inline math was correct (1MB = 1048576, so $sizeKB/1MB = GB)
+    # but fragile and out-of-convention.
+    $sizeHuman = if (Get-Command Get-HumanSize -ErrorAction SilentlyContinue) {
+        Get-HumanSize ($sizeKB * 1KB)
+    } else {
+        "$([math]::Round($sizeKB, 0)) KB"
+    }
 
     if (-not $DryRun) {
         Get-ChildItem $c.Path -Force -ErrorAction Continue |
@@ -249,8 +295,36 @@ foreach ($t in $offloadTargets) {
         $roboExit = $LASTEXITCODE
 
         if ($roboExit -le 3) {
-            # Clean source remnants and create junction
-            if (Test-Path $t.Path) { Remove-Item $t.Path -Recurse -Force -ErrorAction Continue }
+            # M-10 fix 2026-04-21: verify the /MOVE actually drained the source
+            # before attempting the junction. Multi-thread robocopy /MOVE can
+            # silently leave locked files behind (robocopy exit <8 still = partial
+            # success); if those remain, mklink over the source fails and the
+            # junction-skipped path fires — but the partial data at source and
+            # dest is not flagged clearly. Count residual files and log the
+            # count before the junction decision.
+            $residualFiles = 0
+            try {
+                $opts = [System.IO.EnumerationOptions]::new()
+                $opts.IgnoreInaccessible = $true
+                $opts.RecurseSubdirectories = $true
+                $residualFiles = @([System.IO.Directory]::EnumerateFiles($t.Path, '*', $opts)).Count
+            } catch {
+                # Source fully drained — EnumerateFiles throws on non-existent path
+                $residualFiles = 0
+            }
+            if ($residualFiles -gt 0) {
+                Log "  Post-/MOVE residual: $residualFiles file(s) remain at $($t.Path). Likely file locks. Junction NOT created to avoid shadowing residual data." -Level Warn
+                continue
+            }
+            # Clean source dir (now empty) and create junction
+            if (Test-Path $t.Path) {
+                try {
+                    Remove-Item $t.Path -Recurse -Force -ErrorAction Stop
+                } catch {
+                    Log "  Source dir cleanup failed: $_ — junction skipped" -Level Warn
+                    continue
+                }
+            }
             if (-not (Test-Path $t.Path)) {
                 cmd /c "mklink /J `"$($t.Path)`" `"$destPath`"" 2>$null
                 Log "  Junction created" -Level Success

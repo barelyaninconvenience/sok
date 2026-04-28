@@ -26,7 +26,12 @@
 [CmdletBinding()]
 param(
     [switch]$DryRun,
-    [string]$BackupDir = "$env:USERPROFILE\Documents\Journal\Projects\claude-backup"
+    [string]$BackupDir = "$env:USERPROFILE\Documents\Journal\Projects\claude-backup",
+    # HIGH-3 fix 2026-04-22: pre-commit credential scan gate.
+    # Default: abort git commit if a high-confidence credential pattern is detected
+    # in any copied config file. Pass -SkipCredentialScan to bypass (NOT recommended;
+    # only use when you've manually confirmed the copied configs are clean).
+    [switch]$SkipCredentialScan
 )
 
 $ErrorActionPreference = 'Continue'
@@ -35,11 +40,23 @@ $modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'
 if (-not (Test-Path $modulePath)) { $modulePath = 'C:\Users\shelc\Documents\Journal\Projects\scripts\common\SOK-Common.psm1' }
 if (Test-Path $modulePath) { Import-Module $modulePath -Force }
 
-# SYSTEM-context fix
+# SYSTEM-context fix — remap $env:USERPROFILE, then re-evaluate $BackupDir since
+# its param-default bound to the systemprofile path BEFORE this block runs.
+# Without the re-eval, scheduled-task runs under SYSTEM would create a ghost
+# backup tree under C:\Windows\System32\config\systemprofile\... on cold start.
+# H-8 fix 2026-04-21: query Resolve-RealUserProfile (Substrate Thesis portability)
+# instead of hardcoding 'C:\Users\shelc'. Bootstrap fallback preserves behavior on
+# this machine; substrate-recovery on a differently-named account now works.
 if ($env:USERPROFILE -like '*systemprofile*') {
-    $env:USERPROFILE  = 'C:\Users\shelc'
-    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
-    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
+    if (-not $PSBoundParameters.ContainsKey('BackupDir')) {
+        $BackupDir = "$env:USERPROFILE\Documents\Journal\Projects\claude-backup"
+    }
 }
 
 $startTime = Get-Date
@@ -130,8 +147,85 @@ foreach ($src in $sources) {
     }
 }
 
-# Git commit (if not DryRun and git is available)
-if (-not $DryRun -and (Get-Command git -ErrorAction SilentlyContinue)) {
+# HIGH-3 fix 2026-04-22: pre-commit credential scan.
+# Before git add/commit, scan key config files for credential patterns. If any
+# match, ABORT the commit — the files stay on disk for operator inspection, but
+# nothing enters permanent git history. Pass -SkipCredentialScan to bypass only
+# after manual confirmation that the configs are clean.
+function Test-ConfigCredentialLeak {
+    param([string]$FilePath)
+    if (-not (Test-Path $FilePath)) { return @() }
+    $findings = [System.Collections.Generic.List[string]]::new()
+    try {
+        $content = Get-Content $FilePath -Raw -ErrorAction Stop
+    } catch {
+        return @()
+    }
+    # Key-name patterns — JSON field names that strongly imply a secret
+    # with a non-empty, moderately-long value
+    $patterns = @(
+        # "apiKey": "..." / "api_key": "..." / "api-key": "..." etc.
+        '"[a-zA-Z_]*[aA]pi[_-]?[Kk]ey"\s*:\s*"([^"]{16,})"',
+        '"[a-zA-Z_]*[Tt]oken"\s*:\s*"([^"]{20,})"',
+        '"[a-zA-Z_]*[Ss]ecret"\s*:\s*"([^"]{16,})"',
+        '"[a-zA-Z_]*[Pp]assword"\s*:\s*"([^"]{8,})"',
+        '"[a-zA-Z_]*[Bb]earer"\s*:\s*"([^"]{16,})"',
+        # URL-embedded credentials (same family as Migrate-PlaintextMCPCreds detector)
+        '[?&](?:[a-zA-Z]+[Aa]pi[Kk]ey|api[_-]?key|token|access[_-]?token|secret)=[A-Za-z0-9_\-]{16,}',
+        # Private key markers — catastrophic if committed
+        '-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----',
+        # AWS-style access key (AKIA + 16 alphanumeric)
+        '\bAKIA[0-9A-Z]{16}\b',
+        # GitHub PAT (ghp_, gho_, ghu_, ghs_, ghr_ + 36 chars)
+        '\bgh[pousr]_[A-Za-z0-9]{36,}\b'
+    )
+    foreach ($pat in $patterns) {
+        $m = [regex]::Matches($content, $pat)
+        if ($m.Count -gt 0) {
+            # Report WITHOUT echoing the captured value
+            $findings.Add("pattern: $pat | $($m.Count) match(es)") | Out-Null
+        }
+    }
+    return $findings
+}
+
+$credentialLeakDetected = $false
+if (-not $DryRun -and -not $SkipCredentialScan) {
+    Log 'PRE-COMMIT CREDENTIAL SCAN' -Level Section
+    $filesToScan = @(
+        Join-Path $BackupDir 'config\settings.json'
+        Join-Path $BackupDir 'config\claude_desktop_config.json'
+        Join-Path $BackupDir 'config\CLAUDE.md'
+    )
+    # Include any JSON files under the project-scripts-claude subtree
+    $projectClaudeDir = Join-Path $BackupDir 'config\project-scripts-claude'
+    if (Test-Path $projectClaudeDir) {
+        $filesToScan += (Get-ChildItem $projectClaudeDir -Recurse -File -Filter '*.json' -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+    }
+    foreach ($f in $filesToScan) {
+        if (-not (Test-Path $f)) { continue }
+        $leaks = Test-ConfigCredentialLeak -FilePath $f
+        if ($leaks.Count -gt 0) {
+            $credentialLeakDetected = $true
+            Log "  LEAK in $f :" -Level Error
+            foreach ($l in $leaks) { Log "    - $l" -Level Error }
+        } else {
+            Log "  clean: $(Split-Path $f -Leaf)" -Level Debug
+        }
+    }
+    if ($credentialLeakDetected) {
+        Log "CREDENTIAL LEAK DETECTED. Git commit ABORTED — files remain on disk for inspection." -Level Error
+        Log "  Remediation:" -Level Error
+        Log "    1. Inspect the flagged file(s) and redact or move credentials to DPAPI" -Level Error
+        Log "    2. Re-run SOK-BackupClaude to pick up redacted copies" -Level Error
+        Log "    3. -SkipCredentialScan is available for false-positive bypass (not recommended)" -Level Error
+    } else {
+        Log 'No credential patterns detected — safe to commit' -Level Success
+    }
+}
+
+# Git commit (if not DryRun, not credential-leaked, and git is available)
+if (-not $DryRun -and -not $credentialLeakDetected -and (Get-Command git -ErrorAction SilentlyContinue)) {
     Push-Location $BackupDir
     try {
         if (-not (Test-Path '.git')) {

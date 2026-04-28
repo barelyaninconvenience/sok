@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "job-crawler": {
+      "command": "py",
+      "args": [
+        "-3.14",
+        "-m",
+        "mcp.server"
+      ],
+      "cwd": "C:\\Users\\shelc\\Documents\\Journal\\Projects\\scripts\\job-crawler"
+    }
+  }
+}

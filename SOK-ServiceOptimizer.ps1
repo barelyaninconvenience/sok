@@ -59,6 +59,59 @@ if ($env:SOK_NESTED -eq '1' -and $Action -eq 'Interactive') {
 
 if ($DryRun) { Write-SOKLog '*** DRY RUN ***' -Level Warn }
 
+# H-6 fix 2026-04-21: database write-ahead-log corruption protection.
+# Database services (Neo4j, MongoDB, MySQL, PostgreSQL, Redis/Memurai, InfluxDB)
+# use WAL that is flushed on graceful stop but not on process kill. Immediate
+# Stop-Process after Stop-Service (before SCM finishes draining the process)
+# is a corruption surface. These process names are matched case-insensitively
+# against target ProcessName and are never force-killed after Stop-Service;
+# they get only the service-stop + graceful-drain-poll path.
+$script:DatabaseProcessNames = @(
+    'prunsrv-amd64',   # Neo4j (Apache Commons Daemon wrapper)
+    'mongod',          # MongoDB
+    'mysqld',          # MySQL
+    'postgres',        # PostgreSQL
+    'memurai',         # Redis-compat on Windows
+    'redis-server',    # Redis native
+    'influxd'          # InfluxDB
+)
+
+# Graceful-stop helper: stop service + poll for Stopped + optionally (non-DB)
+# reap orphan process. Returns $true on clean stop.
+function Stop-ServiceGracefully {
+    param(
+        [Parameter(Mandatory)][string]$ServiceName,
+        [string]$ProcessName,
+        [int]$PollTimeoutSec = 5
+    )
+    try {
+        Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+    } catch {
+        Write-SOKLog "  Stop-Service failed for $ServiceName : $($_.Exception.Message)" -Level Error
+        return $false
+    }
+    # Poll until Status -eq Stopped (or timeout)
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $PollTimeoutSec) {
+        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if ($null -eq $svc -or $svc.Status -eq 'Stopped') { break }
+        Start-Sleep -Milliseconds 200
+    }
+    $sw.Stop()
+    # Non-DB only: reap orphan process if still running after service stop
+    $isDb = $ProcessName -and ($ProcessName.ToLower() -in ($script:DatabaseProcessNames | ForEach-Object { $_.ToLower() }))
+    if ($ProcessName -and -not $isDb) {
+        Stop-Process -Name $ProcessName -Force -ErrorAction Continue
+    }
+    if ($isDb -and $ProcessName) {
+        $stillRunning = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue
+        if ($stillRunning) {
+            Write-SOKLog "  Note: $ProcessName still running after service stop — NOT force-killing (DB; WAL corruption risk). SCM drain may still be in progress." -Level Warn
+        }
+    }
+    return $true
+}
+
 # ═══════════════════════════════════════════════════════════════
 # SERVICE TARGET DEFINITIONS
 # ═══════════════════════════════════════════════════════════════
@@ -157,13 +210,15 @@ elseif ($Action -eq 'Auto') {
             continue
         }
         try {
-            Stop-Service -Name $tgt.ServiceName -Force -ErrorAction Stop
-            Set-Service -Name $tgt.ServiceName -StartupType Manual -ErrorAction Continue
-            # Also kill lingering process
-            Stop-Process -Name $tgt.ProcessName -Force -ErrorAction Continue
-            Start-Sleep -Milliseconds 300
-            Write-SOKLog "Stopped: $($tgt.Name) (~$($tgt.MemMB) MB freed, set to Manual)" -Level Success
-            $stoppedCount++; $freedMB += $tgt.MemMB
+            # H-6 fix 2026-04-21: graceful stop with DB-protection (no force-kill of DB processes)
+            $ok = Stop-ServiceGracefully -ServiceName $tgt.ServiceName -ProcessName $tgt.ProcessName -PollTimeoutSec 5
+            if ($ok) {
+                Set-Service -Name $tgt.ServiceName -StartupType Manual -ErrorAction Continue
+                Write-SOKLog "Stopped: $($tgt.Name) (~$($tgt.MemMB) MB freed, set to Manual)" -Level Success
+                $stoppedCount++; $freedMB += $tgt.MemMB
+            } else {
+                Write-SOKLog "Stop-Service failed for $($tgt.Name) — skipping startup-type change" -Level Error
+            }
         }
         catch {
             Write-SOKLog "Failed to stop $($tgt.Name): $($_.Exception.Message)" -Level Error
@@ -183,10 +238,14 @@ elseif ($Action -eq 'Interactive') {
             }
             else {
                 try {
-                    Stop-Service -Name $tgt.ServiceName -Force -ErrorAction Stop
-                    Set-Service -Name $tgt.ServiceName -StartupType Manual -ErrorAction Continue
-                    Stop-Process -Name $tgt.ProcessName -Force -ErrorAction Continue
-                    Write-SOKLog "  Stopped: $($tgt.Name)" -Level Success
+                    # H-6 fix 2026-04-21: graceful stop with DB-protection
+                    $ok = Stop-ServiceGracefully -ServiceName $tgt.ServiceName -ProcessName $tgt.ProcessName -PollTimeoutSec 5
+                    if ($ok) {
+                        Set-Service -Name $tgt.ServiceName -StartupType Manual -ErrorAction Continue
+                        Write-SOKLog "  Stopped: $($tgt.Name)" -Level Success
+                    } else {
+                        Write-SOKLog "  Failed to stop $($tgt.Name)" -Level Error
+                    }
                 }
                 catch { Write-SOKLog "  Failed: $_" -Level Error }
             }

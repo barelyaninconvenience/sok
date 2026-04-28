@@ -22,7 +22,7 @@
 param([switch]$DryRun)
 
 $scriptDir = 'C:\Users\shelc\Documents\Journal\Projects\scripts'
-$logBase = 'C:\Users\shelc\Documents\SOK\Logs\Restructure'
+$logBase = 'C:\Users\shelc\Documents\Journal\Projects\SOK\Logs\Restructure'
 $today = Get-Date -Format 'yyyyMMdd'
 
 # Ensure log directory exists

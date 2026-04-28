@@ -162,13 +162,18 @@ function Get-ProcessCategory {
         if ($nameLower -match '^(msmpeng|nissrv|securityhealthservice|mpcmdrun)$') {
             return @{ Category = 'Security'; Reason = 'Windows Defender component' }
         }
-        if ($company -and $company -match '(?i)symantec|mcafee|kaspersky|bitdefender|malwarebytes') {
+        # L-7 (Cluster C) fix 2026-04-22: removed redundant `$company -and`
+        # short-circuit — PowerShell's -match returns $false on $null/empty
+        # without error, so the null-guard is defensive noise. Retained below
+        # where -notmatch is used (-notmatch on $null returns $true, so guard
+        # IS semantically load-bearing there).
+        if ($company -match '(?i)symantec|mcafee|kaspersky|bitdefender|malwarebytes') {
             return @{ Category = 'Security'; Reason = "Security vendor: $company" }
         }
 
         # Audio/Video drivers
         if ($nameLower -match '^(audiodg|wavessyssvc|wavessvc|rtkaudioservice)' -or
-            ($company -and $company -match '(?i)realtek|nvidia|amd|intel' -and $nameLower -match 'audio|display|gpu')) {
+            ($company -match '(?i)realtek|nvidia|amd|intel' -and $nameLower -match 'audio|display|gpu')) {
             return @{ Category = 'AudioVideo'; Reason = 'Hardware driver' }
         }
 
@@ -197,6 +202,10 @@ function Get-ProcessCategory {
         }
 
         # Third-party updaters
+        # L-7 retention: `-and $company` is semantically load-bearing with -notmatch
+        # because `$null -notmatch 'foo'` returns $true (vacuous satisfaction).
+        # Without the null-guard, a process with no Company metadata whose name
+        # matches 'update' would be mis-classified as third-party Updater.
         if ($nameLower -match 'update' -and $company -and $company -notmatch '(?i)microsoft') {
             return @{ Category = 'Updater'; Reason = "Third-party updater: $company" }
         }

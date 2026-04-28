@@ -93,7 +93,7 @@ The script interactively prompts to remove this junction when run. To do it manu
 rmdir "C:\Users\shelc\OneDrive - University of Cincinnati"
 
 # To reconnect UC OneDrive: sign in via OneDrive settings with:
-#   shelcaddell@mail.uc.edu
+#   <UC_EMAIL>
 ```
 
 ---

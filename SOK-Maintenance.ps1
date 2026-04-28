@@ -43,11 +43,15 @@ if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
 }
 
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# H-8 fix 2026-04-21: Substrate Thesis portability via Resolve-RealUserProfile.
 if ($env:USERPROFILE -like '*systemprofile*') {
-    $env:USERPROFILE  = 'C:\Users\shelc'
-    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
-    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
-    Write-SOKLog '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
+    Write-SOKLog "[SYSTEM-CONTEXT] Remapped profile env vars to $realProfile" -Level Warn
 }
 
 $results = [ordered]@{
@@ -181,8 +185,9 @@ foreach ($d in $allDrives) {
     if (Test-Path $offloadRoot) {
         $tempDirs = Get-ChildItem -Path $offloadRoot -Directory -Recurse -Depth 3 -Force -ErrorAction SilentlyContinue |
             Where-Object {
-                $_.Name -match '^(temp|tmp|cache|__pycache__)$' -and
-                -not ($script:WSLExclusions | Where-Object { $_.FullName -like $_ })
+                $dir = $_
+                $dir.Name -match '^(temp|tmp|cache|__pycache__)$' -and
+                -not ($script:WSLExclusions | Where-Object { $dir.FullName -like $_ })
             }
         foreach ($td in $tempDirs) {
             $cachePaths += @{ Path = $td.FullName; Label = "$($d.DeviceID) offload temp: $($td.Name)" }
@@ -331,7 +336,7 @@ if ($Mode -in @('Standard', 'Deep', 'Thorough')) {
         if ($DryRun) { Write-SOKLog "[DRY] Would run: $($mgr.UpdateCmd)" -Level Debug; continue }
 
         # Verbose timeout handling
-        $tempLog = Join-Path $env:TEMP "sok_${($mgr.Name)}_$(Get-Date -Format 'HHmmss').log"
+        $tempLog = Join-Path $env:TEMP "sok_$($mgr.Name)_$(Get-Date -Format 'HHmmss').log"
         try {
             $updateScript = [scriptblock]::Create("$($mgr.UpdateCmd) 2>&1 | Tee-Object -FilePath '$tempLog'")
             $result = Invoke-WithTimeout -ScriptBlock $updateScript -TimeoutSeconds $timeout -Description "$($mgr.Name) update"
@@ -340,10 +345,15 @@ if ($Mode -in @('Standard', 'Deep', 'Thorough')) {
                 $results.PackagesUpdated++
             } else {
                 # Verbose timeout: show last lines of output
+                # MEDIUM-6 fix 2026-04-22: $lastLines declared at this scope (not
+                # nested in the if-block) so the later reference on line 356 doesn't
+                # leak from the if-scope. Functionally equivalent (prior code worked
+                # via $null -join behavior) but scoping is now explicit.
+                $lastLines = @()
                 $detail = "$($mgr.Name): $($result.Error)"
                 if (Test-Path $tempLog) {
-                    $lastLines = Get-Content $tempLog -Tail 5 -ErrorAction SilentlyContinue
-                    if ($lastLines) {
+                    $lastLines = @(Get-Content $tempLog -Tail 5 -ErrorAction SilentlyContinue)
+                    if ($lastLines.Count -gt 0) {
                         $detail += " | Last output: $($lastLines -join ' → ')"
                     }
                 }
@@ -472,6 +482,10 @@ if ($Mode -eq 'Thorough') {
 # ═══════════════════════════════════════════════════════════════
 # LOG CLEANUP
 # ═══════════════════════════════════════════════════════════════
+# LOW-5 fix 2026-04-22: 160 = Fibonacci-convention log retention (matches
+# $DEFAULT_MAX_LOG_AGE_DAYS in SOK-Common). Explicitly a ceiling for "old-enough-
+# to-deprecate" log files — balance between keeping operational history and
+# preventing unbounded SOK\Logs growth. Override via sok-config.json MaxLogAgeDays.
 $maxAge = if ($config.MaxLogAgeDays) { $config.MaxLogAgeDays } else { 160 }
 Remove-StaleLogFiles -MaxAgeDays $maxAge
 

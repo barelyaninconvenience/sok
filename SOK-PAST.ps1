@@ -120,7 +120,7 @@ param(
     # If %diff exceeds this threshold, operator must confirm before report writes.
     # 16.66% = 1/6 of files changed — signals architectural shift, not incremental.
     [double]$AutoApproveThreshold = 16.66,
-    [string]$ComparatorOutputDir  = "$env:USERPROFILE\Documents\SOK\Archives",
+    [string]$ComparatorOutputDir  = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Archives",
 
     # ── RESTRUCTURE PARAMS ─────────────────────────────────────────────────────
     [string[]]$RestructureTargets = @(
@@ -217,7 +217,7 @@ try {
 # UC OneDrive orphan causes robocopy errors in Offload/PreSwap. Repairing these
 # before any read operation ensures clean baselines.
 #
-# These are KNOWN, NAMED issues specific to CLAY_PC derived from documented
+# These are KNOWN, NAMED issues specific to <HOST> derived from documented
 # incidents (v4 crisis, SOK-BareMetal FIX-100, post-reinstall patterns).
 # InfraFix does not dynamically discover issues — it has a fixed repair list.
 # New incidents → new named FIX entries here.
@@ -244,6 +244,20 @@ if ($FixInfra) {
         if ($DryRun) {
             Write-SOKLog "[DRY] Would repair nvm junction: $nvmSource -> $nvmTarget" -Level Ignore
         } else {
+            # Cluster-A MEDIUM fix 2026-04-21: ReparsePoint guard before rmdir.
+            # The prior code assumed $nvmSource is ALWAYS a junction. If a previous
+            # incomplete install left it as a real directory with content, rmdir would
+            # error silently (stderr to 2>$null) and the subsequent mklink would fail
+            # with "path already exists." Silent data-retention failure. Matches the
+            # FIX-2 pattern at line ~265.
+            if (Test-Path $nvmSource) {
+                $attr = [System.IO.File]::GetAttributes($nvmSource)
+                if (($attr -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+                    Write-SOKLog "FIX-1 SKIPPED: $nvmSource is a real directory, not a junction. Manual review required — rmdir would destroy content." -Level Error
+                    $infraFailed++
+                    return
+                }
+            }
             cmd /c "rmdir `"$nvmSource`"" 2>$null | Out-Null
             $r = cmd /c "mklink /J `"$nvmSource`" `"$nvmTarget`"" 2>&1
             if ($LASTEXITCODE -eq 0) { Write-SOKLog "Fixed nvm4w junction: $nvmSource -> $nvmTarget" -Level Success; $infraFixed++ }
@@ -314,8 +328,18 @@ if ($FixInfra) {
         } else {
             $depParent = Split-Path $deprecatedHistory -Parent
             if (-not (Test-Path $depParent)) { New-Item -Path $depParent -ItemType Directory -Force | Out-Null }
+            # Cluster-A MEDIUM fix 2026-04-21: if destination already exists, -Force
+            # merges/overwrites silently. Any file in Deprecated\History\ with a
+            # colliding name from a prior run gets overwritten by the legacy version —
+            # **deprecate-never-delete violation via unintended overwrite**. Timestamp
+            # the destination to preserve all deprecation layers.
+            if (Test-Path $deprecatedHistory) {
+                $depTs = Get-Date -Format 'yyyyMMdd_HHmmss'
+                $deprecatedHistory = "${deprecatedHistory}_$depTs"
+                Write-SOKLog "Deprecated\History already exists — timestamping to preserve: $deprecatedHistory" -Level Warn
+            }
             Move-Item $legacyHistory $deprecatedHistory -Force -ErrorAction Continue
-            Write-SOKLog "Moved legacy SOK\History -> SOK\Deprecated\History" -Level Success
+            Write-SOKLog "Moved legacy SOK\History -> $deprecatedHistory" -Level Success
             $infraFixed++
         }
     }
@@ -398,7 +422,7 @@ if ($TakeInventory) {
     $GlobalState['Inventory_DriveTopology'] = $driveTopology
 
     # ── Junction Map ────────────────────────────────────────────────────────
-    # Junction health is the most critical metric on CLAY_PC. The v4 crisis (10
+    # Junction health is the most critical metric on <HOST>. The v4 crisis (10
     # broken junctions after E: hit 78%) was the origin event of the full SOK
     # suite. We scan 9 known roots — deeper scan would catch more but costs time.
     Write-SOKDivider "Junction Map"
@@ -488,18 +512,33 @@ if ($TakeInventory) {
         $invData['winget_packages'] = @{ Count = $wingetPackages.Count; Packages = $wingetPackages }
         $GlobalState['Inventory_WingetPackages'] = $wingetPackages
 
-        # ── pip packages (py -3.14) ───────────────────────────────────────────
-        # py -3.14 explicitly to avoid Altair embedded Python collision.
-        # v1.0 omitted this — pip is the primary ML/AI toolchain manager on CLAY_PC.
+        # ── pip packages (py launcher, highest available version) ────────────
+        # Cluster-A MEDIUM fix 2026-04-21: py -3.14 was hardcoded; when system
+        # upgrades to 3.15+, that call silently yields 0 packages (py -3.14 returns
+        # non-zero, ConvertFrom-Json on error → $null) masking a core inventory
+        # data source. Now: detect highest available Python version via `py -0`.
+        # Explicit version pin still avoids Altair embedded Python collision.
         $pipPackages = @()
+        $pyTargetVer = $null
         if (Get-Command py -ErrorAction SilentlyContinue) {
-            $pipRaw = py -3.14 -m pip list --format=json 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
-            if ($pipRaw) {
-                $pipPackages = $pipRaw | ForEach-Object { @{ Name = $_.name; Version = $_.version } }
-                Write-SOKLog "  pip (py -3.14): $($pipPackages.Count) packages" -Level Ignore
+            $pyVersions = (py -0 2>&1) -join "`n"
+            $verMatch = [regex]::Matches($pyVersions, '-V:(\d+\.\d+)')
+            if ($verMatch.Count -gt 0) {
+                $pyTargetVer = ($verMatch | ForEach-Object { [version]$_.Groups[1].Value } | Sort-Object -Descending | Select-Object -First 1).ToString()
+            }
+            if ($pyTargetVer) {
+                $pipRaw = & py "-$pyTargetVer" -m pip list --format=json 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($pipRaw) {
+                    $pipPackages = $pipRaw | ForEach-Object { @{ Name = $_.name; Version = $_.version } }
+                    Write-SOKLog "  pip (py -$pyTargetVer): $($pipPackages.Count) packages" -Level Ignore
+                } else {
+                    Write-SOKLog "  pip (py -$pyTargetVer): no packages returned — py call may have failed" -Level Warn
+                }
+            } else {
+                Write-SOKLog "  pip: py launcher found but no Python versions detected via 'py -0'" -Level Warn
             }
         }
-        $invData['pip_packages'] = @{ Count = $pipPackages.Count; Packages = $pipPackages }
+        $invData['pip_packages'] = @{ Count = $pipPackages.Count; Packages = $pipPackages; PyVersion = $pyTargetVer }
         $GlobalState['Inventory_PipPackages'] = $pipPackages
 
         # ── Language runtimes ─────────────────────────────────────────────────
@@ -961,8 +1000,16 @@ if ($CompareSnapshots) {
         }
 
         if ($pctDiff -gt $AutoApproveThreshold -and -not $DryRun) {
-            $confirm = Read-Host "Volatility $pctDiff% exceeds threshold $AutoApproveThreshold%. Write report? (Y/N)"
-            if ($confirm -notmatch '^[Yy]') { Write-SOKLog "Report cancelled by operator." -Level Warn; break }
+            # Cluster-A MEDIUM fix 2026-04-21: Read-Host hangs indefinitely under
+            # non-interactive (scheduled/SYSTEM) run. Fail-safe to abort when
+            # interactive context is absent — report can be regenerated on demand.
+            if ([Environment]::UserInteractive) {
+                $confirm = Read-Host "Volatility $pctDiff% exceeds threshold $AutoApproveThreshold%. Write report? (Y/N)"
+                if ($confirm -notmatch '^[Yy]') { Write-SOKLog "Report cancelled by operator." -Level Warn; break }
+            } else {
+                Write-SOKLog "Volatility $pctDiff% exceeds threshold but context is non-interactive — report write skipped. Re-run interactively to override." -Level Warn
+                break
+            }
         }
 
         if (-not $DryRun) {
@@ -975,10 +1022,16 @@ if ($CompareSnapshots) {
             # Safer approach: use timestamps instead of file names for the diff filename
             $diffPath = "$ComparatorOutputDir\SOK_Diff_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
             $v = 1
-            while (Test-Path $diffPath) { $diffPath = "$ComparatorOutputDir\SOK_Diff_$(Get-Date -Format 'yyyyMMdd_HHmmss')_v$v.txt"; $v++ }
+            # Cluster-A MEDIUM fix 2026-04-21: upper bound to prevent pathological loop.
+            while (Test-Path $diffPath) {
+                $diffPath = "$ComparatorOutputDir\SOK_Diff_$(Get-Date -Format 'yyyyMMdd_HHmmss')_v$v.txt"
+                $v++
+                if ($v -gt 99) { throw "Diff version ceiling exceeded (>99 versions in one second). Prune old diffs." }
+            }
 
+            # M-6 (Cluster C) consistency 2026-04-22: 1MB → 128KB
             $utf8   = [System.Text.Encoding]::UTF8
-            $stream = [System.IO.FileStream]::new($diffPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 1048576)
+            $stream = [System.IO.FileStream]::new($diffPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 131072)
             $writer = [System.IO.StreamWriter]::new($stream, $utf8)
             try {
                 $writer.WriteLine("# SOK DIFFERENTIAL REPORT")
@@ -1072,8 +1125,24 @@ if ($RestructureBackups) {
             if (Test-Path $sevenZ) {
                 Write-SOKLog "  Raw (has .7z): $($folder.Name)" -Level Warn
                 if ($DryRun) {
-                    Write-SOKLog "  [DRY] Would delete: $($folder.FullName)" -Level Ignore
+                    Write-SOKLog "  [DRY] Would delete: $($folder.FullName) (after 7z integrity check)" -Level Ignore
                 } else {
+                    # Cluster-A HIGH fix 2026-04-21: 7z integrity test before deletion.
+                    # Previously, existence of a same-name .7z was the sole precondition
+                    # for deleting the raw folder. A corrupt/incomplete archive would
+                    # pass that check while actually containing less than the raw folder,
+                    # so deletion would be irreversible data loss. Require 7z to pass
+                    # integrity test (exit 0) before deletion.
+                    if (-not $sevenZip -or -not (Test-Path $sevenZip)) {
+                        Write-SOKLog "  7z executable not found — raw folder preserved (integrity cannot be verified): $($folder.Name)" -Level Warn
+                        continue
+                    }
+                    & $sevenZip t $sevenZ -bso0 -bsp0 2>&1 | Out-Null
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-SOKLog "  Archive FAILED integrity test (exit=$LASTEXITCODE) — raw folder PRESERVED: $($folder.Name)" -Level Error
+                        continue
+                    }
+                    Write-SOKLog "  Archive integrity verified: $($folder.Name).7z" -Level Success
                     # robocopy /MIR to empty temp = fastest reliable deep deletion.
                     # Avoids Remove-Item MAX_PATH failures on deeply nested backup trees.
                     $emptyTemp = Join-Path $env:TEMP "SOK_Empty_$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
@@ -1104,12 +1173,21 @@ if ($RestructureBackups) {
                 Write-SOKLog "  [DRY] Would: & `"$sevenZip`" x `"$($archive.FullName)`" -o`"$extractDest`" -aoa -mmt=16" -Level Ignore
             } else {
                 $r = & $sevenZip x $archive.FullName "-o$extractDest" -aoa -mmt=16 -bsp1 2>&1
-                if ($LASTEXITCODE -le 1) {
-                    Write-SOKLog "  Extracted: $($archive.Name)" -Level Success
-                    $confirm = Read-Host "  Delete $($archive.Name) after verified extraction? (Y/N)"
-                    if ($confirm -match '^[Yy]') {
-                        Remove-Item $archive.FullName -Force -ErrorAction SilentlyContinue
-                        Write-SOKLog "  Deleted: $($archive.Name)" -Level Success
+                # Cluster-A MEDIUM fix 2026-04-21: require strict exit 0 before
+                # opening the delete-archive path. Prior `-le 1` treated 7z exit 1
+                # (warnings — some files skipped, case-collisions, path-too-long) as
+                # success. Deleting after a warning-exit extraction loses the skipped
+                # files permanently. Exit 1 now logs and preserves archive for review.
+                if ($LASTEXITCODE -eq 0) {
+                    Write-SOKLog "  Extracted (clean): $($archive.Name)" -Level Success
+                    if ([Environment]::UserInteractive) {
+                        $confirm = Read-Host "  Delete $($archive.Name) after verified extraction? (Y/N)"
+                        if ($confirm -match '^[Yy]') {
+                            Remove-Item $archive.FullName -Force -ErrorAction SilentlyContinue
+                            Write-SOKLog "  Deleted: $($archive.Name)" -Level Success
+                        }
+                    } else {
+                        Write-SOKLog "  Archive preserved: $($archive.Name) (non-interactive context — re-run interactively to delete)" -Level Ignore
                     }
                 } else {
                     Write-SOKLog "  7z exit ${LASTEXITCODE}: $($archive.Name)" -Level Error
@@ -1135,9 +1213,12 @@ if ($RestructureBackups) {
                 $taggedName = "$($src.Name)$tag"
                 $dest = Join-Path $MergeTarget $taggedName
                 if (Test-Path $dest) {
+                    # Cluster-A MEDIUM fix 2026-04-21: readability — prior backtick
+                    # escape (`_$counter) was a correct-but-obscure PowerShell idiom.
+                    # ${taggedName}_${counter} makes the variable boundaries explicit.
                     $counter = 2
-                    while (Test-Path (Join-Path $MergeTarget "$taggedName`_$counter")) { $counter++ }
-                    $dest = Join-Path $MergeTarget "$taggedName`_$counter"
+                    while (Test-Path (Join-Path $MergeTarget "${taggedName}_${counter}")) { $counter++ }
+                    $dest = Join-Path $MergeTarget "${taggedName}_${counter}"
                 }
                 $renamed++
             }

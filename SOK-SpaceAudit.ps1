@@ -24,16 +24,19 @@
     [FIX]  All sizes in KB. Levels use Ignore/Annotate hierarchy.
 
 .PARAMETER MinSizeKB
-    Minimum directory size to report. Default: 33333 KB (~32.5 MB).
+    Minimum directory size to report. Default: 21138 KB (~20.6 MB).
+    Per Fibonacci-convention sizing used across SOK (see SOK-Common constants).
 
 .PARAMETER ScanDepth
-    Maximum directory depth. Default: 66 (effectively unlimited).
+    Maximum directory depth. Default: 21 (Fibonacci; effectively unlimited for
+    typical filesystem trees, but bounded to prevent runaway descent on
+    pathological reparse-point loops).
 
 .PARAMETER ThrottleLimit
     Parallel thread count. Default: 8.
 
 .PARAMETER OutputDir
-    Output directory for JSON files. Defaults to Documents\SOK\Audit\
+    Output directory for JSON files. Defaults to Documents\Journal\Projects\SOK\Audit\
 
 .NOTES
     Author: S. Clay Caddell
@@ -49,7 +52,12 @@
 #Requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-    [switch]$DryRun,  # SOP compliance only — no ops are gated (scan is read-only)
+    # L-1 (Cluster C) fix 2026-04-22: DryRun present for SOP compliance only.
+    # SOK-SpaceAudit is read-only (no filesystem modifications), so the switch
+    # has no behavioral effect — passing it neither adds safety nor changes output.
+    # Retained for uniformity with the rest of SOK (every script has -DryRun per
+    # CLAUDE.md §2 Universal Engineering Standards).
+    [switch]$DryRun,  # read-only scan; -DryRun is a no-op by design
     [int]$MinSizeKB = 21138,
     [int]$ScanDepth = 21,
     [int]$ThrottleLimit = 13,
@@ -100,17 +108,21 @@ if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
 }
 
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# H-8 fix 2026-04-21: Substrate Thesis portability via Resolve-RealUserProfile.
 if ($env:USERPROFILE -like '*systemprofile*') {
-    $env:USERPROFILE  = 'C:\Users\shelc'
-    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
-    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
     if (Get-Command Write-SOKLog -ErrorAction SilentlyContinue) {
-        Write-SOKLog '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+        Write-SOKLog "[SYSTEM-CONTEXT] Remapped profile env vars to $realProfile" -Level Warn
     }
 }
 
 if (-not $OutputDir) {
-    $OutputDir = if (Get-Command Get-ScriptLogDir -ErrorAction SilentlyContinue) { Get-ScriptLogDir -ScriptName 'SOK-SpaceAudit' } else { Join-Path $env:USERPROFILE 'Documents\SOK\Audit' }
+    $OutputDir = if (Get-Command Get-ScriptLogDir -ErrorAction SilentlyContinue) { Get-ScriptLogDir -ScriptName 'SOK-SpaceAudit' } else { Join-Path $env:USERPROFILE 'Documents\Journal\Projects\SOK\Audit' }
 }
 if (-not (Test-Path $OutputDir)) { New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null }
 

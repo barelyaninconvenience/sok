@@ -36,11 +36,15 @@ Write-Host "`n━━━ SOK INFRASTRUCTURE FIX ━━━" -ForegroundColor Cyan
 if ($DryRun) { Log 'DRY RUN — no changes' -Level Warn }
 
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# H-8 fix 2026-04-21: Substrate Thesis portability via Resolve-RealUserProfile.
 if ($env:USERPROFILE -like '*systemprofile*') {
-    $env:USERPROFILE  = 'C:\Users\shelc'
-    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
-    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
-    Log '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
+    Log "[SYSTEM-CONTEXT] Remapped profile env vars to $realProfile" -Level Warn
 }
 
 $fixed = 0; $skipped = 0; $failed = 0
@@ -264,6 +268,46 @@ if (Test-Path $chocoShimsDir) {
     }
 } else {
     Log "  Chocolatey not installed (no bin dir)" -Level Success; $skipped++
+}
+
+# ═══════════════════════════════════════════════════
+# 8. Rust shim PATH append (FIX-6 candidate per project_sok.md, 2026-04-21)
+#    Scoop's rustup/cargo shims at ~/scoop/shims/ fail --version under automation
+#    (intermittent PATH resolution issue in Scoop 0.5.x+). Authoritative fix:
+#    add Scoop's active-rust bin dir directly to the User PATH so cargo/rustc
+#    resolve without the shim layer. Idempotent: does nothing if the path is
+#    already on User PATH or if the rust dir doesn't exist.
+# ═══════════════════════════════════════════════════
+Log '8. Rust shim PATH append' -Level Section
+$rustBin = Join-Path $env:USERPROFILE 'scoop\apps\rust\current\bin'
+if (-not (Test-Path $rustBin)) {
+    Log "  Rust scoop app not present at $rustBin — skipping" -Level Ignore; $skipped++
+} else {
+    # Read current User PATH (NOT the process PATH) — we want persistence
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $userPathSegments = @($userPath -split ';' | Where-Object { $_ })
+    $alreadyPresent = $userPathSegments |
+        Where-Object { $_.TrimEnd('\') -ieq $rustBin.TrimEnd('\') } |
+        Select-Object -First 1
+    if ($alreadyPresent) {
+        Log "  Rust bin already on User PATH: $rustBin" -Level Success; $skipped++
+    } else {
+        if ($DryRun) {
+            Log "  [DRY] Would append to User PATH: $rustBin" -Level Debug
+        } else {
+            try {
+                $newPath = if ([string]::IsNullOrEmpty($userPath)) { $rustBin }
+                           else { "$($userPath.TrimEnd(';'));$rustBin" }
+                [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
+                # Also update current process PATH so this session sees the change
+                $env:Path = "$env:Path;$rustBin"
+                Log "  Appended to User PATH: $rustBin" -Level Success; $fixed++
+                Log "  Open a NEW terminal to pick up the PATH change in child processes." -Level Annotate
+            } catch {
+                Log "  PATH append FAILED: $($_.Exception.Message)" -Level Error; $failed++
+            }
+        }
+    }
 }
 
 # ═══════════════════════════════════════════════════

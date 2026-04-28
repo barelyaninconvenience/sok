@@ -1,0 +1,293 @@
+<#
+.SYNOPSIS
+    SOK-LiveDigest.ps1 — Summarizes LiveScan JSON output into uploadable digest.
+
+.DESCRIPTION
+    LiveScan produces 79MB+ (DirsOnly) or 525MB+ (full) JSON files that are
+    too large to upload to Claude or most tools. This script reads the JSON
+    locally and produces a summary containing:
+    - Directory sizes (top N)
+    - File counts per top-level folder
+    - Extension breakdown with total sizes
+    - Top N largest files
+
+    LiveScan JSON property mapping:
+    - "p" = path (double-backslash escaped)
+    - "s" = sizeKB (files only, absent in DirsOnly mode)
+    - "c" = creation time (files only)
+    - "m" = modified time
+
+    Output: JSON (machine-parseable) + TXT (human-readable) in SOK\Logs\LiveDigest\
+
+.PARAMETER InputPath
+    Path to the LiveScan JSON file. If not specified, auto-detects most recent.
+
+.PARAMETER TopN
+    Number of items to include in "top N" lists. Default: 66666
+
+.PARAMETER OutputDir
+    Output directory. Default: SOK\Logs\LiveDigest\
+
+.NOTES
+    Author: S. Clay Caddell
+    Version: 1.1.0
+    Date: 25Mar2026
+    Domain: PRESENT — consumes LiveScan JSON; produces uploadable digest; downstream of LiveScan
+    Run: pwsh -NoProfile -ExecutionPolicy Bypass -File .\SOK-LiveDigest.ps1
+    Flags: -InputPath <path> -TopN <int> -OutputDir <path>
+#>
+#Requires -Version 7.0
+#Requires -RunAsAdministrator
+[CmdletBinding()]
+param(
+    # DryRun: parse the LiveScan JSON but skip writing digest output files.
+    [switch]$DryRun,
+    [string]$InputPath,
+    [int]$TopN = 204661,
+    [string]$OutputDir
+)
+
+$ErrorActionPreference = 'Continue'
+
+# Date formats — literal strings, NOT module-scoped $script: vars (those are inaccessible from script scope)
+$DateFile = 'yyyyMMdd_HHmmss'
+$DateISO = 'yyyy-MM-dd HH:mm:ss'
+
+# Module import
+$modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'
+if (-not (Test-Path $modulePath)) { $modulePath = 'C:\Users\shelc\Documents\Journal\Projects\scripts\common\SOK-Common.psm1' }
+if (Test-Path $modulePath) { Import-Module $modulePath -Force }
+else { Write-Error "SOK-Common.psm1 not found at $modulePath"; exit 1 }
+
+Show-SOKBanner -ScriptName 'SOK-LiveDigest' -Subheader "TopN: $TopN"
+$logPath = Initialize-SOKLog -ScriptName 'SOK-LiveDigest'
+$startTime = Get-Date
+
+# Run LiveScan first if stale — LiveDigest is its downstream consumer
+if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
+    Invoke-SOKPrerequisite -CallingScript 'SOK-LiveDigest'
+}
+
+# ═══════════════════════════════════════════════════════════════
+# LOCATE INPUT
+# ═══════════════════════════════════════════════════════════════
+if (-not $InputPath) {
+    Write-SOKLog 'No input path specified -- searching for latest LiveScan output...' -Level Ignore
+    $searchDirs = @(
+        (Get-ScriptLogDir -ScriptName 'SOK-LiveScan')
+        # Legacy-path fallbacks removed 2026-04-20 per CLAUDE.md §2 SOK Boundaries.
+        # All SOK logs now live under Documents\Journal\Projects\SOK\Logs\ via Get-ScriptLogDir.
+    )
+    $candidates = @()
+    foreach ($dir in $searchDirs) {
+        if (Test-Path $dir) {
+            $found = Get-ChildItem -Path $dir -Filter 'LiveScan_*.json' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notmatch 'Errors' -and $_.Name -notmatch '_history' } |
+                Sort-Object LastWriteTime -Descending
+            if ($found) { $candidates = @($found); break }
+        }
+    }
+    if ($candidates.Count -eq 0) {
+        Write-SOKLog 'No LiveScan JSON found. Run SOK-LiveScan first.' -Level Error
+        exit 1
+    }
+    $InputPath = $candidates[0].FullName
+    $sizeKB = Get-SizeKB -Bytes $candidates[0].Length
+    Write-SOKLog "Found: $($candidates[0].Name) ($sizeKB KB)" -Level Success
+}
+
+if (-not (Test-Path $InputPath)) {
+    Write-SOKLog "Input file not found: $InputPath" -Level Error
+    exit 1
+}
+
+$inputSizeKB = Get-SizeKB -Bytes (Get-Item $InputPath).Length
+Write-SOKLog "Input: $InputPath ($inputSizeKB KB)" -Level Ignore
+
+# ═══════════════════════════════════════════════════════════════
+# PARSE
+# ═══════════════════════════════════════════════════════════════
+Write-SOKLog 'PARSING LIVESCAN DATA' -Level Section
+$parseStart = Get-Date
+Write-SOKLog 'Loading JSON (this may take a moment for large files)...' -Level Annotate
+try {
+    $raw = Get-Content $InputPath -Raw -ErrorAction Stop
+    $data = $raw | ConvertFrom-Json -ErrorAction Stop
+    $raw = $null
+    [System.GC]::Collect()
+}
+catch {
+    Write-SOKLog "Failed to parse JSON: $_" -Level Error
+    exit 1
+}
+$parseTime = [math]::Round(((Get-Date) - $parseStart).TotalSeconds, 1)
+Write-SOKLog "Parsed in ${parseTime}s" -Level Success
+
+# Extract items from LiveScan wrapper: { "scan_metadata":{}, "items":[], "summary":{} }
+$entries = @()
+if ($data.PSObject.Properties.Name -contains 'items') {
+    $entries = @($data.items)
+    if ($data.scan_metadata) {
+        $dirsOnly = if ($data.scan_metadata.dirs_only) { 'DirsOnly' } else { 'Full' }
+        Write-SOKLog "Scan mode: $dirsOnly | Source: $($data.scan_metadata.source)" -Level Annotate
+    }
+}
+elseif ($data -is [array]) { $entries = $data }
+else { $entries = @($data) }
+
+$totalEntries = $entries.Count
+Write-SOKLog "Entries: $totalEntries" -Level Success
+
+# Detect size data (present in full mode, absent in DirsOnly)
+$hasSizeData = $false
+if ($entries.Count -gt 0 -and $null -ne $entries[0].s) { $hasSizeData = $true }
+Write-SOKLog "Size data present: $hasSizeData" -Level Annotate
+
+# ═══════════════════════════════════════════════════════════════
+# ANALYZE — LiveScan shorthand: p=path, s=sizeKB, m=modified, c=created
+# ═══════════════════════════════════════════════════════════════
+Write-SOKLog 'ANALYZING' -Level Section
+
+$topLevelMap = @{}
+$processedCount = 0
+foreach ($e in $entries) {
+    $path = $e.p
+    if (-not $path) { continue }
+    # Note: LiveScan streaming JSON uses \\ in paths, but ConvertFrom-Json already unescapes them.
+    # Only unescape if we detect double-backslashes still present.
+    if ($path.Contains('\\')) { $path = $path.Replace('\\', '\') }
+
+    $parts = $path -split '\\'
+    $topLevel = if ($parts.Count -ge 3) { "$($parts[0])\$($parts[1])\$($parts[2])" } elseif ($parts.Count -ge 2) { "$($parts[0])\$($parts[1])" } else { $path }
+
+    if (-not $topLevelMap.ContainsKey($topLevel)) { $topLevelMap[$topLevel] = @{ Count = 0; SizeKB = 0 } }
+    $topLevelMap[$topLevel].Count++
+    if ($e.s) { $topLevelMap[$topLevel].SizeKB += $e.s }
+
+    $processedCount++
+    if ($processedCount % 222222 -eq 0) {
+        Write-SOKLog "  Processed $processedCount / $totalEntries entries..." -Level Debug
+    }
+}
+Write-SOKLog "  Top-level folders: $($topLevelMap.Count)" -Level Success
+
+$topLevelSorted = @($topLevelMap.GetEnumerator() |
+    Sort-Object { $_.Value.SizeKB } -Descending |
+    Select-Object -First $TopN |
+    ForEach-Object { [ordered]@{ Path = $_.Key; Count = $_.Value.Count; SizeKB = [math]::Round($_.Value.SizeKB, 2) } })
+
+# Extension breakdown
+$extMap = @{}
+foreach ($e in $entries) {
+    $path = $e.p
+    if (-not $path) { continue }
+    $ext = [System.IO.Path]::GetExtension($path)
+    if (-not $ext) { $ext = '(no-ext)' }
+    $ext = $ext.ToLower()
+    if (-not $extMap.ContainsKey($ext)) { $extMap[$ext] = @{ Count = 0; SizeKB = 0 } }
+    $extMap[$ext].Count++
+    if ($e.s) { $extMap[$ext].SizeKB += $e.s }
+}
+Write-SOKLog "  Extensions: $($extMap.Count)" -Level Success
+
+$extSorted = @($extMap.GetEnumerator() |
+    Sort-Object { $_.Value.SizeKB } -Descending |
+    Select-Object -First $TopN |
+    ForEach-Object { [ordered]@{ Extension = $_.Key; Count = $_.Value.Count; SizeKB = [math]::Round($_.Value.SizeKB, 2) } })
+
+# Largest entries (only meaningful with size data)
+$largestEntries = @()
+if ($hasSizeData) {
+    $largestEntries = @($entries |
+        Where-Object { $_.s -gt 0 } |
+        Sort-Object { $_.s } -Descending |
+        Select-Object -First $TopN |
+        ForEach-Object { [ordered]@{ Path = $_.p; SizeKB = $_.s; Modified = $_.m } })
+    Write-SOKLog "  Largest entries: $($largestEntries.Count)" -Level Success
+}
+else {
+    Write-SOKLog "  DirsOnly mode -- no per-file size data for largest entries" -Level Annotate
+}
+
+# ═══════════════════════════════════════════════════════════════
+# BUILD OUTPUT
+# ═══════════════════════════════════════════════════════════════
+Write-SOKLog 'BUILDING DIGEST' -Level Section
+$duration = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 1)
+
+$digest = [ordered]@{
+    metadata = [ordered]@{
+        script_version = 'SOK-LiveDigest 1.1.0'
+        source_file    = $InputPath
+        source_size_kb = $inputSizeKB
+        total_entries  = $totalEntries
+        has_size_data  = $hasSizeData
+        top_n          = $TopN
+        generated_iso  = Get-Date -Format $DateISO
+        duration_sec   = $duration
+    }
+    top_level_folders   = $topLevelSorted
+    extension_breakdown = $extSorted
+    largest_entries     = $largestEntries
+}
+
+if (-not $OutputDir) { $OutputDir = Get-ScriptLogDir -ScriptName 'SOK-LiveDigest' }
+if (-not (Test-Path $OutputDir)) { New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null }
+
+$ts = Get-Date -Format $DateFile
+$jsonOut = Join-Path $OutputDir "LiveDigest_${ts}.json"
+$txtOut = Join-Path $OutputDir "LiveDigest_${ts}.txt"
+
+if ($DryRun) {
+    Write-SOKLog "DRY RUN — digest complete; no output files written." -Level Warn
+    Write-SOKLog "  Would write: $jsonOut" -Level Ignore
+    Write-SOKLog "  Would write: $txtOut" -Level Ignore
+    exit 0
+}
+$digest | ConvertTo-Json -Depth 6 | Set-Content -Path $jsonOut -Force -Encoding UTF8
+$jsonSizeKB = Get-SizeKB -Bytes (Get-Item $jsonOut).Length
+Write-SOKLog "JSON: $jsonOut ($jsonSizeKB KB)" -Level Success
+
+# TXT summary
+$txt = [System.Text.StringBuilder]::new()
+[void]$txt.AppendLine("SOK-LiveDigest Summary -- $(Get-Date -Format $DateISO)")
+[void]$txt.AppendLine("Source: $InputPath ($inputSizeKB KB)")
+[void]$txt.AppendLine("Entries: $totalEntries | Size data: $hasSizeData | Duration: ${duration}s")
+[void]$txt.AppendLine("")
+[void]$txt.AppendLine("=== TOP-LEVEL FOLDERS (by size, count: $($topLevelSorted.Count)) ===")
+foreach ($f in $topLevelSorted) {
+    [void]$txt.AppendLine("  $($f.SizeKB.ToString().PadLeft(14)) KB  $($f.Count.ToString().PadLeft(8)) items  $($f.Path)")
+}
+[void]$txt.AppendLine("")
+[void]$txt.AppendLine("=== EXTENSIONS (by size, count: $($extSorted.Count)) ===")
+foreach ($e in $extSorted) {
+    [void]$txt.AppendLine("  $($e.SizeKB.ToString().PadLeft(14)) KB  $($e.Count.ToString().PadLeft(8)) files  $($e.Extension)")
+}
+if ($hasSizeData -and $largestEntries.Count -gt 0) {
+    [void]$txt.AppendLine("")
+    [void]$txt.AppendLine("=== LARGEST FILES (count: $($largestEntries.Count)) ===")
+    foreach ($l in $largestEntries) {
+        [void]$txt.AppendLine("  $($l.SizeKB.ToString().PadLeft(14)) KB  $($l.Path)")
+    }
+}
+Set-Content -Path $txtOut -Value $txt.ToString() -Force -Encoding UTF8
+$txtSizeKB = Get-SizeKB -Bytes (Get-Item $txtOut).Length
+Write-SOKLog "TXT:  $txtOut ($txtSizeKB KB)" -Level Success
+
+Write-SOKSummary -Stats ([ordered]@{
+    InputSizeKB     = $inputSizeKB
+    TotalEntries    = $totalEntries
+    HasSizeData     = $hasSizeData
+    TopLevelFolders = $topLevelSorted.Count
+    Extensions      = $extSorted.Count
+    LargestEntries  = $largestEntries.Count
+    OutputJsonKB    = $jsonSizeKB
+    OutputTxtKB     = $txtSizeKB
+    DurationSec     = $duration
+}) -Title 'LIVEDIGEST COMPLETE'
+
+# History write suppressed -- the LiveDigest JSON/TXT ARE the artifacts
+# Save-SOKHistory -ScriptName 'SOK-LiveDigest' -AggregateOnly -RunData @{
+#     Duration = $duration
+#     Results  = @{ InputSizeKB = $inputSizeKB; Entries = $totalEntries; OutputKB = $jsonSizeKB + $txtSizeKB }
+# }

@@ -38,6 +38,19 @@
 
 $script:SecretsDir = Join-Path $env:USERPROFILE '.sok-secrets'
 
+# 2026-04-22 hardening: reject secret names that could escape the SecretsDir via
+# path-traversal (../EXA_API_KEY) or contain characters invalid in Windows
+# filenames. Valid: alphanumeric plus hyphen/underscore, 1-128 chars.
+# Rationale: any caller that populates $Name from MCP arguments or user input
+# (even transitively) could otherwise write to arbitrary paths under USERPROFILE.
+function Test-SOKSecretName {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Name)
+    if ($Name -notmatch '^[A-Za-z0-9_\-]{1,128}$') {
+        throw "Invalid secret name '$Name'. Must match [A-Za-z0-9_-]{1,128}."
+    }
+}
+
 function Initialize-SOKSecretsDir {
     [CmdletBinding()]
     param()
@@ -68,6 +81,7 @@ function Set-SOKSecret {
         [Parameter(ParameterSetName='Secure',  Mandatory)][SecureString]$Value,
         [Parameter(ParameterSetName='Plain',   Mandatory)][string]$Plain
     )
+    Test-SOKSecretName -Name $Name
     Initialize-SOKSecretsDir
 
     if ($PSCmdlet.ParameterSetName -eq 'Plain') {
@@ -112,6 +126,7 @@ function Get-SOKSecret {
         [Parameter(Mandatory)][string]$Name,
         [switch]$AsSecureString
     )
+    Test-SOKSecretName -Name $Name
     $path = Join-Path $script:SecretsDir "$Name.sec"
     if (-not (Test-Path $path)) {
         Write-Error "Secret '$Name' not found at $path. Store with Set-SOKSecret first."
@@ -143,6 +158,7 @@ function Remove-SOKSecret {
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Name)
+    Test-SOKSecretName -Name $Name
     $path = Join-Path $script:SecretsDir "$Name.sec"
     if (-not (Test-Path $path)) { return }
 

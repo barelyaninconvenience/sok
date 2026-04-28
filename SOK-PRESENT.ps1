@@ -254,7 +254,7 @@ if ($OptimizeDefender) {
             # Excluding them eliminates the primary cause of post-install slowdowns.
             $exclusions = @(
                 "$env:USERPROFILE\Documents\Journal\Projects",
-                "$env:USERPROFILE\Documents\SOK",
+                "$env:USERPROFILE\Documents\Journal\Projects\SOK",
                 "$env:USERPROFILE\.cargo",
                 "$env:USERPROFILE\.npm",
                 "$env:USERPROFILE\.pyenv",
@@ -306,7 +306,19 @@ if ($OptimizeProcesses) {
 
     $selfPid    = $PID
     $parentPid  = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
-    $protected  = @($config.ProtectedProcesses)
+
+    # v1.1.1 backport from SOK-ProcessOptimizer (C-1 / C-2 fix 2026-04-21):
+    #   - Read namespaced $config.ProcessOptimizer.ProtectedProcesses (was $config.ProtectedProcesses → empty)
+    #   - Case-normalized to lowercase
+    #   - Read $config.ProcessOptimizer.BloatProcesses (was completely ignored)
+    $protected = @($config.ProcessOptimizer.ProtectedProcesses) |
+        Where-Object { $_ } |
+        ForEach-Object { $_.ToString().ToLower() }
+    if ($null -eq $protected) { $protected = @() }
+    $bloat = @($config.ProcessOptimizer.BloatProcesses) |
+        Where-Object { $_ } |
+        ForEach-Object { $_.ToString().ToLower() }
+    if ($null -eq $bloat) { $bloat = @() }
 
     function Get-ProcessCategory {
         param([System.Diagnostics.Process]$Proc)
@@ -314,19 +326,22 @@ if ($OptimizeProcesses) {
         # no $using: prefix needed here. $using: only applies inside ForEach-Object -Parallel
         # runspace boundaries; inside a regular function it resolves to $null silently.
         if ($Proc.Id -eq $selfPid -or $Proc.Id -eq $parentPid) { return 'SelfProtected' }
-        if ($protected -contains $Proc.ProcessName) { return 'ConfigProtected' }
         $name = $Proc.ProcessName.ToLower()
+        if ($protected -contains $name) { return 'ConfigProtected' }
+        # v1.1.1 backport: BloatProcess check moved BEFORE heuristics so config beats DevTool/Shell/etc
+        if ($bloat -contains $name) { return 'BloatProcess' }
         $path = try { $Proc.MainModule.FileName } catch { '' }
 
         if ($name -in @('system','registry','smss','csrss','wininit','services','lsass','dwm','winlogon','fontdrvhost','logonui','idle')) { return 'WindowsCore' }
         if ($name -eq 'svchost') { return 'WindowsService' }
-        if ($name -in @('msmapeng','nissrv','securityhealthservice') -or
-            ($Proc.Company -match 'Microsoft') -and $name -match 'defender|security|protect') { return 'Security' }
+        if ($name -in @('msmpeng','nissrv','securityhealthservice') -or
+            (($Proc.Company -match 'Microsoft') -and $name -match 'defender|security|protect')) { return 'Security' }
         if ($name -match '^(audiodg|wavessys|wavessvc|rtkaudioservice)' -or
             $Proc.Company -match 'Realtek|NVIDIA Audio|Waves Audio') { return 'AudioVideo' }
         if ($name -in @('explorer','sihost','shellexperiencehost','startmenuexperiencehost','runtimebroker','textinputhost','searchhost')) { return 'Shell' }
+        # v1.1.1 backport: anchored exact-match regex; removed cmd|conhost|node|terminal|cursor; added claude|windowsterminal; $hasWindow gate removed
+        if ($name -match '^(code|pwsh|powershell|windowsterminal|claude|idea|pycharm|rider|datagrip|postman|dbeaver)$') { return 'DevTool' }
         $hasWindow = ($Proc.MainWindowHandle -ne [System.IntPtr]::Zero)
-        if ($hasWindow -and $name -match 'code|pwsh|powershell|terminal|cmd|conhost|idea|pycharm|rider|datagrip|postman|dbeaver|cursor') { return 'DevTool' }
         if ($name -match 'telemetry|diagtrack|census|compattelrunner|diagscap') { return 'Telemetry' }
         if ($name -match 'update' -and $Proc.Company -notmatch 'Microsoft') { return 'Updater' }
         if ($name -match 'crash|reporter|werfault|wermgr') { return 'CrashReporter' }
@@ -339,10 +354,11 @@ if ($OptimizeProcesses) {
     }
 
     # Kill tiers — each mode includes all previous tiers
+    # v1.1.0 backport: BloatProcess added to Balanced and Aggressive
     $killTiers = @{
         Conservative = @('Telemetry', 'Updater', 'CrashReporter')
-        Balanced     = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync', 'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground')
-        Aggressive   = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync', 'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground', 'UserProcess')
+        Balanced     = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync', 'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground', 'BloatProcess')
+        Aggressive   = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync', 'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground', 'BloatProcess', 'UserProcess')
     }
     $killCategories = $killTiers[$ProcessMode]
 
@@ -353,7 +369,8 @@ if ($OptimizeProcesses) {
         $cat = Get-ProcessCategory $proc
         if (-not $categoryStats.ContainsKey($cat)) { $categoryStats[$cat] = 0 }
         $categoryStats[$cat]++
-        if ($cat -in $killCategories -and $protected -notcontains $proc.ProcessName) {
+        # v1.1.1 backport: case-normalized $protected check
+        if ($cat -in $killCategories -and $protected -notcontains $proc.ProcessName.ToLower()) {
             $killList.Add($proc)
         }
     }
@@ -382,8 +399,8 @@ if ($OptimizeProcesses) {
 # ══════════════════════════════════════════════════════════════════════════════
 # [3] SERVICE OPTIMIZER — Stop Idle Databases and Background Services
 # ══════════════════════════════════════════════════════════════════════════════
-# CLAY_PC runs PostgreSQL, MongoDB, Neo4j, MySQL, Redis, and InfluxDB as services.
-# These together consume ~3-4 GB RAM when idle. The SOK design philosophy:
+# Multiple database services may be installed and consume memory when idle.
+# The SOK design philosophy:
 # all database services are set to MANUAL startup (not Automatic). They are started
 # on-demand when needed and stopped after. ServiceOptimizer enforces this discipline.
 #
@@ -557,7 +574,18 @@ if ($Maintain) {
                     Write-SOKLog "  pip check: $($pipDryConflicts.Count) conflict(s)" -Level Warn
                     $pipDryConflicts | ForEach-Object { Write-SOKLog "    $_" -Level Warn }
                 } else { Write-SOKLog "  pip check: no conflicts" -Level Success }
-                $dryOutdated = py -3.14 -m pip list --outdated --format=json 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
+                # Cluster-A JSON-parse fix 2026-04-22: pip emits WARNING: lines on
+                # stderr; 2>&1 merges them into stdout; ConvertFrom-Json chokes on "W"
+                # at position 0 with a TERMINATING error that -ErrorAction
+                # SilentlyContinue does NOT catch (this class of error bypasses the
+                # preference). Separate stderr, wrap in try/catch.
+                $dryOutdated = $null
+                try {
+                    $dryRaw = & py -3.14 -m pip list --outdated --format=json 2>$null
+                    if ($dryRaw) { $dryOutdated = $dryRaw | ConvertFrom-Json -ErrorAction Stop }
+                } catch {
+                    Write-SOKLog "[DRY] pip outdated JSON parse failed (likely pip stderr warning): $($_.Exception.Message)" -Level Warn
+                }
                 Write-SOKLog "[DRY] pip: $(@($dryOutdated).Count) package(s) would be upgraded" -Level Debug
             }
         } else {
@@ -591,7 +619,16 @@ if ($Maintain) {
                 } else { Write-SOKLog "  pip check: no conflicts" -Level Success }
 
                 Write-SOKLog "  pip outdated check (py -3.14)..." -Level Ignore
-                $outdated = py -3.14 -m pip list --outdated --format=json 2>&1 | ConvertFrom-Json -ErrorAction SilentlyContinue
+                # Cluster-A JSON-parse fix 2026-04-22: see line ~580 for rationale.
+                # This is the live-mode twin of the DryRun fix above. Was the source of
+                # the TERMINATING ERROR "W at position 0" flagged on the 23:34 run.
+                $outdated = $null
+                try {
+                    $outRaw = & py -3.14 -m pip list --outdated --format=json 2>$null
+                    if ($outRaw) { $outdated = $outRaw | ConvertFrom-Json -ErrorAction Stop }
+                } catch {
+                    Write-SOKLog "  pip outdated JSON parse failed (likely pip stderr warning): $($_.Exception.Message) — skipping pip upgrade phase" -Level Warn
+                }
                 if ($outdated) {
                     Write-SOKLog "  pip: $($outdated.Count) packages outdated" -Level Warn
                     foreach ($pkg in ($outdated | Select-Object -First 20)) {  # Cap at 20 to avoid timeout
@@ -717,9 +754,13 @@ if ($Clean) {
     # However: if the operator has added 'Claude' to $config.ProtectedProcesses, we respect that.
     # The typical use case for protection is running this script from inside the Claude desktop app.
     $candidateKills = @('chrome', 'msedge', 'Claude', 'Slack', 'Discord', 'GitKraken', 'Cypress', 'Insomnia', 'AcroCEF', 'Acrobat')
-    $processesToKill = $candidateKills | Where-Object { $_ -notin @($config.ProtectedProcesses) }
+    # C-1 fix 2026-04-21: namespaced $config.ProcessOptimizer.ProtectedProcesses + case-normalized comparison
+    $cfgProtected = @($config.ProcessOptimizer.ProtectedProcesses) |
+        Where-Object { $_ } |
+        ForEach-Object { $_.ToString().ToLower() }
+    $processesToKill = $candidateKills | Where-Object { $_.ToLower() -notin $cfgProtected }
     if ($candidateKills.Count -ne $processesToKill.Count) {
-        $skippedProcs = $candidateKills | Where-Object { $_ -in @($config.ProtectedProcesses) }
+        $skippedProcs = $candidateKills | Where-Object { $_.ToLower() -in $cfgProtected }
         Write-SOKLog "  Protected processes excluded from kill list: $($skippedProcs -join ', ')" -Level Warn
     }
     foreach ($proc in $processesToKill) {
@@ -950,8 +991,9 @@ if ($LiveScan) {
         $enumOpts.RecurseSubdirectories = $true; $enumOpts.IgnoreInaccessible = $true
         $enumOpts.AttributesToSkip = [System.IO.FileAttributes]::ReparsePoint
 
+        # M-6 (Cluster C) consistency 2026-04-22: 1MB → 128KB
         $utf8   = [System.Text.Encoding]::UTF8
-        $stream = [System.IO.FileStream]::new($outJson, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 1048576)
+        $stream = [System.IO.FileStream]::new($outJson, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 131072)
         $writer = [System.IO.StreamWriter]::new($stream, $utf8)
         $errStream = [System.IO.StreamWriter]::new($errLog, $false, $utf8)
         $count = 0; $errCount = 0; $scanStart = Get-Date

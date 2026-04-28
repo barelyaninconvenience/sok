@@ -36,17 +36,27 @@ param(
     [int]$Threads = 13
 )
 
-# ── SYSTEM-CONTEXT PATH RESOLUTION ──
-if ($env:USERPROFILE -like '*systemprofile*') {
-    $actualProfile = 'C:\Users\shelc'
-    $Sources = $Sources | ForEach-Object { $_ -replace [regex]::Escape($env:USERPROFILE), $actualProfile }
-    Write-Host "[SYSTEM-CONTEXT] Remapped Sources from $env:USERPROFILE to $actualProfile"
-}
-
 $ErrorActionPreference = 'Continue'
 $modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'
 if (-not (Test-Path $modulePath)) { $modulePath = 'C:\Users\shelc\Documents\Journal\Projects\scripts\common\SOK-Common.psm1' }
 if (Test-Path $modulePath) { Import-Module $modulePath -Force }
+
+# ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# HIGH-1 + H-8 fix 2026-04-21: moved to POST-module-load so Resolve-RealUserProfile
+# is available; also updates ALL profile env vars (USERPROFILE/LOCALAPPDATA/APPDATA)
+# for downstream consistency with SOK-Maintenance / SOK-LiveScan / others. Prior
+# code only rewrote $Sources; any downstream code reading $env:LOCALAPPDATA under
+# SYSTEM saw the systemprofile path.
+if ($env:USERPROFILE -like '*systemprofile*') {
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $Sources = $Sources | ForEach-Object { $_ -replace [regex]::Escape($env:USERPROFILE), $realProfile }
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
+    Write-Host "[SYSTEM-CONTEXT] Remapped profile env vars to $realProfile"
+}
 
 $logPath = Initialize-SOKLog -ScriptName 'SOK-Backup'
 Show-SOKBanner -ScriptName 'SOK-Backup' -Subheader "$(if ($Incremental) { '/MIR' } else { '/E' }) | MT:$Threads$(if ($DryRun) { ' | DRY RUN' })"
@@ -143,6 +153,12 @@ foreach ($src in $validSources) {
     Write-SOKLog "$($src.Path) → $destPath ($($src.SizeKB) KB)" -Level Ignore
 
     $roboLog = $logPath -replace '\.log$', "_robo_${srcName}.log"
+    # LOW-4 fix 2026-04-22: /BYTES flag here causes robocopy's own output to report
+    # sizes in bytes rather than KB, which diverges from CLAUDE.md §2 "KB units
+    # throughout" — but this is robocopy's self-reporting, not SOK code. The
+    # summary-line filter below still lands byte-oriented lines in the log.
+    # Kept /BYTES for robocopy's own precision; SOK-side size reporting (via
+    # $src.SizeKB / Get-SizeKB / Get-HumanSize) remains KB-canonical.
     $roboArgs = @(
         $src.Path, $destPath
         $(if ($Incremental) { '/MIR' } else { '/E' })
@@ -153,10 +169,16 @@ foreach ($src in $validSources) {
     if ($DryRun) { $roboArgs += '/L' }
 
     $roboStart = Get-Date
+    # MEDIUM-1 fix 2026-04-21: also surface per-file errors (not just summary lines).
+    # Prior filter dropped exit-code-4-7 warnings (partial/mismatch) with no diagnostic;
+    # operator saw summary but not the reason. Now captures any line matching
+    # ERROR, FAILED, or the timestamped error format robocopy emits.
     & robocopy @roboArgs 2>&1 | ForEach-Object {
         $line = "$_".Trim()
         if ($line -match '^\s*(Dirs|Files|Bytes|Times|Speed|Ended)\s*:') {
             Write-SOKLog "  [robo] $line" -Level Debug
+        } elseif ($line -match '(?i)^\s*ERROR\b|^\d{4}-\d{2}-\d{2}.*ERROR|FAILED|Access is denied') {
+            Write-SOKLog "  [robo-ERR] $line" -Level Warn
         }
     }
     $roboExit = $LASTEXITCODE
@@ -199,8 +221,21 @@ $results.DurationSec = [math]::Round(((Get-Date) - $startTime).TotalSeconds, 1)
 Write-SOKSummary -Stats $results -Title 'BACKUP COMPLETE'
 
 if ($results.Verified -and -not $DryRun) {
-    Write-SOKLog 'Backup VERIFIED. Safe to delete source:' -Level Success
-    foreach ($src in $validSources) { Write-SOKLog "  Remove-Item '$($src.Path)' -Recurse -Force" -Level Annotate }
+    # CRITICAL-1 fix 2026-04-21: never emit operator-ready Remove-Item -Recurse -Force
+    # strings to log as advisory output. CLAUDE.md §2 deprecate-never-delete is explicit:
+    # source dirs go to Deprecated\, not the void. Old advisory was a copy-paste data-loss
+    # vector against the entire Documents\Journal\Projects tree. New advisory shows the
+    # canonical Move-Item to Deprecated\ pattern.
+    Write-SOKLog 'Backup VERIFIED. To stage source for removal (deprecate-never-delete pattern):' -Level Success
+    foreach ($src in $validSources) {
+        $leaf      = Split-Path $src.Path -Leaf
+        $parentDir = Split-Path $src.Path -Parent
+        $deprDir   = Join-Path $parentDir 'Deprecated'
+        $stamp     = Get-Date -Format 'yyyyMMdd_HHmmss'
+        Write-SOKLog "  # Move source to Deprecated\\ (reversible; never hard-delete):" -Level Annotate
+        Write-SOKLog "  if (-not (Test-Path '$deprDir')) { New-Item -ItemType Directory -Path '$deprDir' -Force | Out-Null }" -Level Annotate
+        Write-SOKLog "  Move-Item '$($src.Path)' (Join-Path '$deprDir' '${leaf}_$stamp')" -Level Annotate
+    }
 }
 
 if (Get-Command Save-SOKHistory -ErrorAction SilentlyContinue) {

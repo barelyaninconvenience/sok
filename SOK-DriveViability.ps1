@@ -47,7 +47,7 @@
 
 .PARAMETER OutputDir
     Where to write test artifacts (temp files, logs, report). Defaults to
-    C:\Users\shelc\Documents\SOK\Logs\DriveViability\ — NOT on the target drive.
+    C:\Users\shelc\Documents\Journal\Projects\SOK\Logs\DriveViability\ — NOT on the target drive.
     This matters: if F: can't hold writes, writing the log there would be lost too.
 
 .EXAMPLE
@@ -90,7 +90,7 @@ param(
     [switch]$SkipWrite,
     [switch]$SkipStress,
     [switch]$SkipChkdsk,
-    [string]$OutputDir        = 'C:\Users\shelc\Documents\SOK\Logs\DriveViability'
+    [string]$OutputDir        = 'C:\Users\shelc\Documents\Journal\Projects\SOK\Logs\DriveViability'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -298,9 +298,24 @@ if ($SkipRead) {
     Write-VLog "Reading all existing files on ${DriveLetter}: to surface latent bad sectors..." 'INFO'
     $readErrors = 0; $readBytesOK = 0L; $readStart = Get-Date
     $buffer = [byte[]]::new(1MB)
+    # L-5 (Cluster C) fix 2026-04-22: substring-regex exclusion was fragile —
+    # `MySystemVolumeInformation` or similar legitimate folder names would be
+    # incorrectly skipped. Switched to path-component-aware exclusion that
+    # checks for EXACT path segments, not substrings. Also avoids regex escaping
+    # edge cases (the prior `\$Recycle\.Bin` depended on PowerShell's regex
+    # handling of `$` as end-of-string anchor).
+    $excludedSegments = @('SOK_ViabilityTest', 'System Volume Information', '$Recycle.Bin')
     $allFiles = try {
         [System.IO.Directory]::EnumerateFiles($DriveRoot, '*', [System.IO.SearchOption]::AllDirectories) |
-            Where-Object { $_ -notmatch 'SOK_ViabilityTest|System Volume Information|\$Recycle\.Bin' }
+            Where-Object {
+                $path = $_
+                $skip = $false
+                foreach ($seg in $excludedSegments) {
+                    # Match segment only when bracketed by path separators (or at drive root)
+                    if ($path -like "*\$seg\*" -or $path -like "*\$seg") { $skip = $true; break }
+                }
+                -not $skip
+            }
     } catch { @() }
 
     $fileCount = 0
@@ -562,7 +577,17 @@ if ($SkipWrite -or $SkipStress) {
                 $fs2.Seek($offset, [System.IO.SeekOrigin]::Begin) | Out-Null
                 $fs2.Read($verify, 0, $writeLen) | Out-Null
                 $fs2.Dispose()
-                if (-not [System.Linq.Enumerable]::SequenceEqual($writeBlock, $verify)) {
+                # H-9 fix 2026-04-21: replaced [System.Linq.Enumerable]::SequenceEqual
+                # with explicit byte-loop. Linq.SequenceEqual on raw byte[] requires the
+                # generic to bind correctly; on machines where System.Linq isn't pre-loaded
+                # in the JIT, the call throws method-not-found. Silent fallback was
+                # $p4.Failures++ with HypothesisH2 marked CONFIRMED — i.e. false-positive
+                # bad-sector report on a healthy drive. Byte-loop has no binding fragility.
+                $bytesEqual = $true
+                for ($k = 0; $k -lt $writeLen; $k++) {
+                    if ($writeBlock[$k] -ne $verify[$k]) { $bytesEqual = $false; break }
+                }
+                if (-not $bytesEqual) {
                     Write-VLog "  Iter $iter VERIFY FAIL at offset $offset (random I/O data corruption)" 'FAIL'
                     $p4.Failures++
                     $p4.HypothesisH2 = 'CONFIRMED: Random write-read mismatch — bad sectors at specific offsets'

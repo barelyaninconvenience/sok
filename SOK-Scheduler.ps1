@@ -1,8 +1,10 @@
+#Requires -Version 7.0
+#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    SOK-Scheduler v2.1.0 — Register/remove Windows Task Scheduler entries for all tactical SOK scripts.
+    SOK-Scheduler v2.2.0 — Register/remove Windows Task Scheduler entries for all tactical SOK scripts.
 .DESCRIPTION
-    Synced against 13 daily tactical scripts + 1 weekly utility as of 03Apr2026.
+    Synced against 14 daily tactical scripts + 1 weekly utility as of 17Apr2026.
     Backward-computed schedule ending at 05:35 with 160% avg-runtime spacing.
     Avg runtimes (seconds): InfraFix=20 Defender=16 Inventory=20 Maintenance=810
     SpaceAudit=4880 ProcOpt=26 SvcOpt=7 Offload=52 Cleanup=30
@@ -36,9 +38,17 @@
     Preview registrations or removals without committing to Task Scheduler.
 .NOTES
     Author: S. Clay Caddell
-    Version: 2.0.0 — add InfraFix, Archiver, Backup; fix Inventory caliber (2 not 3);
+    Version: 2.2.0 — 17Apr2026: resolve schedule-time collisions (Defender 02:17→02:16,
+                      Offload 04:51→04:52, LiveScan 04:53→04:54); add §4 confirmation
+                      block on -Remove; BackupClaude brought into manifest (14 daily total);
+                      #Requires moved to file top.
+             2.1.0 — Apr 2026 interim: BackupClaude initial manifest entry (no collision
+                      resolution yet; subsumed by 2.2.0 which handles schedule-time
+                      collisions and adds the §4 confirmation block). Retained for
+                      release-history continuity.
+             2.0.0 — add InfraFix, Archiver, Backup; fix Inventory caliber (2 not 3);
                       fix LiveScan flags; add -Deep to MaintenanceMode; 3h exec limit.
-    Date: 02Apr2026
+    Date: 17Apr2026
     Domain: Utility — registers/removes Task Scheduler entries; not a temporal script itself
 #>
 [CmdletBinding()]
@@ -47,11 +57,13 @@ param(
     [string]$ScriptDirectory,
     [ValidateSet('Quick','Standard','Deep','Thorough')]
     [string]$MaintenanceMode = 'Quick',
-    [switch]$Remove
+    [switch]$Remove,
+    # Cluster-A MEDIUM fix 2026-04-21: scope-down filter for -Remove. Default 'All'
+    # preserves historical behavior. Use 'Daily' or 'Weekly' to target a subset if
+    # future SOK task classes proliferate.
+    [ValidateSet('All','Daily','Weekly')]
+    [string]$RemoveScope = 'All'
 )
-
-#Requires -Version 7.0
-#Requires -RunAsAdministrator
 
 $modulePath = Join-Path $PSScriptRoot 'common\SOK-Common.psm1'
 if (-not (Test-Path $modulePath)) { $modulePath = 'C:\Users\shelc\Documents\Journal\Projects\scripts\common\SOK-Common.psm1' }
@@ -63,22 +75,68 @@ if (-not $ScriptDirectory) {
 }
 
 $pfx  = 'SOK'
-$pwsh = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh.exe' } else { 'powershell.exe' }
+# Cluster-A MEDIUM fix 2026-04-21: fail loudly if pwsh missing. Every scheduled
+# SOK script has #Requires -Version 7.0, so silent fallback to powershell.exe
+# produces tasks that fail at runtime with a confusing error rather than
+# refusing to register.
+if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+    throw "pwsh.exe (PowerShell 7+) is required to register SOK scheduled tasks. All SOK scripts declare '#Requires -Version 7.0'; silent fallback to powershell.exe would yield tasks that fail at runtime. Install PowerShell 7+ and re-run."
+}
+$pwsh = 'pwsh.exe'
 
-Write-Host "`n━━━ SOK-Scheduler v2.0.0 ━━━" -ForegroundColor Cyan
+Write-Host "`n━━━ SOK-Scheduler v2.2.0 ━━━" -ForegroundColor Cyan
 Write-Host "Dir: $ScriptDirectory | Shell: $pwsh" -ForegroundColor Gray
 
 if ($Remove) {
-    $tasks = Get-ScheduledTask -TaskName "${pfx}-*" -ErrorAction SilentlyContinue
+    # Cluster-A MEDIUM fix 2026-04-21: honor -RemoveScope to narrow the blast radius.
+    $scopePattern = switch ($RemoveScope) {
+        'Daily'   { "${pfx}-Daily-*" }
+        'Weekly'  { "${pfx}-Weekly-*" }
+        default   { "${pfx}-*" }
+    }
+    $tasks = Get-ScheduledTask -TaskName $scopePattern -ErrorAction SilentlyContinue
     if ($DryRun) {
         $tasks | ForEach-Object { Write-Host "  [DRY] Would remove: $($_.TaskName)" -ForegroundColor Yellow }
-        Write-Host "DryRun — no tasks unregistered." -ForegroundColor Yellow; exit
+        Write-Host "DryRun — no tasks unregistered." -ForegroundColor Yellow; exit 0
+    }
+    # §4 destructive-ops checkpoint: -Remove unregisters all SOK-* tasks en masse.
+    # Require explicit typed confirmation to prevent accidental vaporization.
+    if ($tasks -and @($tasks).Count -gt 0) {
+        $names = @($tasks | ForEach-Object { $_.TaskName })
+        Write-Host "`nAbout to unregister $($names.Count) scheduled task(s):" -ForegroundColor Red
+        $names | ForEach-Object { Write-Host "  $_" -ForegroundColor Yellow }
+        Write-Host "`nThis is DESTRUCTIVE and cannot be undone without re-running the scheduler." -ForegroundColor Red
+        $ans = Read-Host "Type 'PROCEED' (all caps, no quotes) to continue"
+        if ($ans -ne 'PROCEED') { Write-Host "Aborted — no tasks unregistered." -ForegroundColor Yellow; exit 0 }
+    } else {
+        Write-Host "No SOK-* tasks found to remove." -ForegroundColor Yellow; exit 0
     }
     $tasks | ForEach-Object { Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false; Write-Host "  Removed: $($_.TaskName)" -ForegroundColor Green }
-    Write-Host "Done." -ForegroundColor Green; exit
+    Write-Host "Done." -ForegroundColor Green; exit 0
 }
 
 # ExecutionTimeLimit 3h: SpaceAudit(~81min) + LiveScan(~23min) + Backup(~10min+) need headroom.
+#
+# Cluster-A MEDIUM note 2026-04-21: SYSTEM principal — implications for tactical scripts
+# ══════════════════════════════════════════════════════════════════════════════════════
+# Tasks below run as `-User 'SYSTEM'`. SYSTEM has its own $env:USERPROFILE at
+# C:\Windows\system32\config\systemprofile — NOT the user's profile. Tactical
+# scripts that depend on any of the following WILL MISBEHAVE under SYSTEM:
+#
+#   - $HOME / $env:USERPROFILE        → resolves to SYSTEM's profile, not user
+#   - $env:APPDATA / $env:LOCALAPPDATA → SYSTEM's, not user's
+#   - OneDrive env vars               → empty / user-scoped only
+#   - User-scope DPAPI secrets (~/.sok-secrets/*.sec) → unreadable by SYSTEM
+#   - Per-user Credential Manager (gh auth token) → empty under SYSTEM
+#
+# Tactical scripts MUST either:
+#   (a) use absolute paths anchored at the operator's profile (via Resolve-RealUserProfile
+#       in SOK-Common which reads the original user from WMIC / CIM), OR
+#   (b) avoid user-scope credentials entirely in scheduled-path execution
+#
+# If any new tactical reads user-scope state, test it BOTH interactively and via
+# `schtasks /run /tn <name>` before declaring it substrate-safe.
+#
 $sched = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
@@ -86,7 +144,7 @@ $sched = New-ScheduledTaskSettingsSet `
     -Priority 4 `
     -ExecutionTimeLimit (New-TimeSpan -Hours 3)
 
-# TASK MANIFEST — 13 tasks, 02:15–05:35, 160% runtime spacing.
+# TASK MANIFEST — 14 tasks, 02:15–05:35, 160% runtime spacing.
 # InfraFix FIRST: broken junctions corrupt downstream Inventory/SpaceAudit results.
 # Maintenance AFTER Inventory: package updates use Inventory baseline via GlobalState.
 # SpaceAudit AFTER Maintenance: sizes reflect post-cleanup state (avoid stale cache counts).
@@ -97,15 +155,15 @@ $sched = New-ScheduledTaskSettingsSet `
 # Backup: no -Incremental = /E (additive). /MIR never runs unattended — deletes from dest.
 $tasks = @(
     [pscustomobject]@{Name='InfraFix';         Script='SOK-InfraFix.ps1';         Args='';                          Time='02:15'}
-    [pscustomobject]@{Name='DefenderOptimizer';Script='SOK-DefenderOptimizer.ps1'; Args='';                          Time='02:17'}
+    [pscustomobject]@{Name='DefenderOptimizer';Script='SOK-DefenderOptimizer.ps1'; Args='';                          Time='02:16'}
     [pscustomobject]@{Name='Inventory';        Script='SOK-Inventory.ps1';         Args='-ScanCaliber 2';            Time='02:17'}
     [pscustomobject]@{Name='Maintenance';      Script='SOK-Maintenance.ps1';       Args="-Mode $MaintenanceMode";    Time='02:19'}
     [pscustomobject]@{Name='SpaceAudit';       Script='SOK-SpaceAudit.ps1';        Args='';                          Time='02:40'}
     [pscustomobject]@{Name='ProcessOptimizer'; Script='SOK-ProcessOptimizer.ps1';  Args='-Mode Balanced';            Time='04:50'}
     [pscustomobject]@{Name='ServiceOptimizer'; Script='SOK-ServiceOptimizer.ps1';  Args='-Action Auto';              Time='04:51'}
-    [pscustomobject]@{Name='Offload';          Script='SOK-Offload.ps1';           Args='';                          Time='04:51'}
+    [pscustomobject]@{Name='Offload';          Script='SOK-Offload.ps1';           Args='';                          Time='04:52'}
     [pscustomobject]@{Name='Cleanup';          Script='SOK-Cleanup.ps1';           Args='';                          Time='04:53'}
-    [pscustomobject]@{Name='LiveScan';         Script='SOK-LiveScan.ps1';          Args='-DirsOnly -ExcludeNoisyDirs';Time='04:53'}
+    [pscustomobject]@{Name='LiveScan';         Script='SOK-LiveScan.ps1';          Args='-DirsOnly -ExcludeNoisyDirs';Time='04:54'}
     [pscustomobject]@{Name='LiveDigest';       Script='SOK-LiveDigest.ps1';        Args='';                          Time='05:18'}
     [pscustomobject]@{Name='Archiver';         Script='SOK-Archiver.ps1';          Args='';                          Time='05:20'}
     [pscustomobject]@{Name='Backup';           Script='SOK-Backup.ps1';            Args='';                          Time='05:22'}

@@ -4,7 +4,7 @@
 <#
 .SYNOPSIS
 	SOK-BareMetal v5.2 FINAL — Exhaustive Bare-Metal Restoration
-	Host: CLAY_PC | User: shelc | Zero-State Assumption
+	Host: <HOST> | User: <USER> | Zero-State Assumption
 	D: unmounted | E: USB-SSD (SOK target) | G: Google Drive VFS
 .DESCRIPTION
 	Complete reconstruction of the operator environment from a zero-state machine.
@@ -888,7 +888,7 @@ Write-Host "`n[+] V5 EXHAUSTIVE SUBSTRATE RESTORATION COMPLETE." -ForegroundColo
 
 ### HISTORICAL CONTEXT & ARCHITECTURAL BUILDUP (Summarized & Deduplicated)
 
-The exhaustive `LATEST` script (`SOK-BareMetal v5.2`) is the culmination of multiple iterative pipelines designed to solve two intersecting crises: an infrastructural collapse triggered by a rogue Python environment mapping (`E:` drive junction stalemates), and the need for a highly optimized, multithreaded data extraction/restoration pipeline tailored for a 14-core NVMe host (`CLAY_PC`).
+The exhaustive `LATEST` script (`SOK-BareMetal v5.2`) is the culmination of multiple iterative pipelines designed to solve two intersecting crises: an infrastructural collapse triggered by a rogue Python environment mapping (`E:` drive junction stalemates), and the need for a highly optimized, multithreaded data extraction/restoration pipeline tailored for a 14-core NVMe host (`<HOST>`).
 
 #### 1. The Archive & Backup Manager (`Invoke-BackupRestructure.ps1`)
 Prior to the BareMetal rebuild, a standalone production-grade pipeline was developed specifically to handle the extraction, deduplication, and enmeshment of massive backup payloads.
@@ -901,7 +901,7 @@ Prior to the BareMetal rebuild, a standalone production-grade pipeline was devel
     * *Phase 3:* Parallel enmeshment using `ForEach-Object -Parallel` with `ThrottleLimit=8` (tuned for NVMe). Features collision-aware derivation tagging, sub-200MB SHA-256 deduplication (and >200MB Size+Timestamp deduplication), and `[System.Threading.Interlocked]` for thread-safe increment counters.
 
 #### 2. The Hardware Crisis & v4 Reconciliation
-`CLAY_PC` encountered an escalating series of subsystem failures stemming from a 257 GB offload from `C:` to `E:\SOK_Offload`. This created a liquidity crisis where `E:` skyrocketed to 78% capacity, breaking 10 cross-drive junctions.
+`<HOST>` encountered an escalating series of subsystem failures stemming from a 257 GB offload from `C:` to `E:\SOK_Offload`. This created a liquidity crisis where `E:` skyrocketed to 78% capacity, breaking 10 cross-drive junctions.
 * **The Python Hijack (Flag 5):** The system's root `python` path was silently resolving to an embedded Altair instance (`C:\Users\shelc\AppData\Local\Altair\MF\python.exe`). Global pip installs were landing in an isolated, untracked environment. This necessitated the strict `py -3.13 -m pip` invocation standard.
 * **The AV Collision (Flag 1):** The host was running Avast, AVG, Avira, Malwarebytes, and Windows Defender simultaneously. The overlapping kernel hooks caused massive file-access latency, blocking generic MSI uninstalls.
 * **The Scoop Shim & ELK Desync (Flags 4 & 6):** Rust/Cargo binaries failed to execute via Scoop due to Windows shim issues, requiring a pivot to Winget `Rustlang.Rustup`. The ELK stack was broken due to `winlogbeat` being locked to v7.x while Elasticsearch was upgraded to v9.x.

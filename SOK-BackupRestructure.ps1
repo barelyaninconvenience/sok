@@ -130,6 +130,13 @@ $derivationMap = [ordered]@{
 function Confirm-Step {
     param([string]$Prompt)
     if ($DryRun -or $ForceConfirm) { return $true }
+    # 2026-04-22 polish: non-interactive guard (consistent with SOK-Comparator + Install-GitHubRelease).
+    # Read-Host would hang indefinitely under redirected stdin (scheduled task, pipeline); default
+    # to "no" with explicit log so the caller sees why nothing proceeded.
+    if ([Console]::IsInputRedirected) {
+        Write-SOKLog "Non-interactive context detected; skipping '$Prompt' (pass -ForceConfirm for unattended runs)" -Level Warn
+        return $false
+    }
     $r = Read-Host "$Prompt [Y/N/Q]"
     if ($r -match '^[Qq]') { Write-SOKLog 'Operator abort.' -Level Warn; exit 0 }
     return ($r -match '^[Yy]')
@@ -140,6 +147,24 @@ function Confirm-Step {
 function Invoke-FastDelete {
     param([string]$Path, [string]$Label)
     if (-not (Test-Path $Path)) { Write-SOKLog "SKIP delete (already gone): $Label" -Level Ignore; return }
+    # MEDIUM-2 fix 2026-04-21: log drive free-space context before attempting
+    # fast-delete so partial-delete diagnostics have the space baseline.
+    # /MIR from empty source typically decreases destination usage, but the
+    # parallel takeown fallback can produce transient load and logs that
+    # accumulate in TEMP — low-space conditions amplify corner cases.
+    try {
+        $driveLetter = (Split-Path $Path -Qualifier) -replace ':$', ''
+        $drv = Get-PSDrive -Name $driveLetter -ErrorAction SilentlyContinue
+        if ($drv) {
+            $freeGB = [math]::Round($drv.Free / 1GB, 2)
+            Write-SOKLog "  Drive ${driveLetter}: ${freeGB} GB free at delete-start" -Level Debug
+            if ($freeGB -lt 2) {
+                Write-SOKLog "  WARN: low free space on ${driveLetter} — fallback takeown may fail if temp logs accumulate" -Level Warn
+            }
+        }
+    } catch {
+        # non-fatal — we can still proceed without the space hint
+    }
     Write-SOKLog "Deleting: $Label ($Path)" -Level Warn
     $emptyDir = Join-Path $env:TEMP "SOK_Empty_$(Get-Random)"
     New-Item -Path $emptyDir -ItemType Directory -Force | Out-Null
@@ -191,6 +216,13 @@ if (-not $RunPhase1) {
         if (-not (Test-Path $rawPath)) { Write-SOKLog "SKIP (not found): $name" -Level Ignore; continue }
         if ($DryRun) { Write-SOKLog "[DRY] Would delete: $rawPath" -Level Warn; continue }
         if (-not $deleteAll -and -not $ForceConfirm) {
+            # 2026-04-22 polish: non-interactive guard — abort Phase 1 entirely rather
+            # than per-item skip, since running this phase non-interactively without
+            # -ForceConfirm is almost certainly an invocation mistake.
+            if ([Console]::IsInputRedirected) {
+                Write-SOKLog 'Phase 1 aborted: non-interactive context detected and -ForceConfirm not passed. Re-run interactively OR pass -ForceConfirm (understanding raw folders will be deleted unconditionally).' -Level Error
+                break
+            }
             $r = Read-Host "Delete raw '$name'? [Y/N/A(ll)/Q]"
             if ($r -match '^[Qq]') { Write-SOKLog 'Phase 1 aborted by operator.' -Level Warn; break }
             if ($r -match '^[Aa]') { $deleteAll = $true }
@@ -351,10 +383,18 @@ if ($SkipPhase3) {
             }
 
             # Clean empty source dir
+            # CRITICAL-2 fix 2026-04-21: defense-in-depth DryRun gate.
+            # Previously safe by control-flow only — DryRun branch exits at line 294
+            # before this code runs. A future refactor that moves the early-return up
+            # could trip silently. Explicit gate makes the destructive intent visible.
             $remaining = @(Get-ChildItem $srcPath -Force -ErrorAction SilentlyContinue).Count
             if ($remaining -eq 0) {
-                Remove-Item $srcPath -Force -ErrorAction SilentlyContinue
-                Write-SOKLog "  Source emptied and removed: $srcPath" -Level Success
+                if (-not $DryRun) {
+                    Remove-Item $srcPath -Force -ErrorAction SilentlyContinue
+                    Write-SOKLog "  Source emptied and removed: $srcPath" -Level Success
+                } else {
+                    Write-SOKLog "  [DRY] Would remove emptied source: $srcPath" -Level Debug
+                }
             } else {
                 Write-SOKLog "  $remaining items remain in source (locked/failed): $srcPath" -Level Warn
             }

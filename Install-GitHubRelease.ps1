@@ -190,7 +190,7 @@ function Get-AssetScore {
 # ═══════════════════════════════════════════════════════════════════════════════
 # ── CURATED TOOL → GITHUB REPO MAP ───────────────────────────────────────────
 # Keys: lowercase normalized tool/package names as they appear in package managers.
-# Covers common dev tools on CLAY_PC. Add entries as needed.
+# Covers common dev tools on <HOST>. Add entries as needed.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 $GitHubMap = @{
@@ -352,7 +352,7 @@ if ($PSCmdlet.ParameterSetName -eq 'Scan') {
     if ($InventoryPath -and (Test-Path $InventoryPath)) {
         $inventoryJson = $InventoryPath
     } else {
-        $sokLogsDir = "$env:USERPROFILE\Documents\SOK\Logs"
+        $sokLogsDir = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Logs"
         if (Test-Path $sokLogsDir) {
             $inventoryJson = Get-ChildItem $sokLogsDir -Filter 'SOK-Inventory*.json' -Recurse -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
@@ -541,6 +541,14 @@ if ($PSCmdlet.ParameterSetName -eq 'Scan') {
             foreach ($tool in $actionable) {
                 Write-Host "`n  [$($tool.Status)] $($tool.Name) ($($tool.InstalledVia) $($tool.InstalledVersion)) → $($tool.GitHubRepo)" -ForegroundColor Yellow
                 if (-not $DryRun) {
+                    # 2026-04-22 polish: non-interactive guard. If stdin is redirected
+                    # (scheduled task, pipeline), Read-Host would hang indefinitely.
+                    # Default to SKIP in non-interactive context — operator must re-run
+                    # interactively or pre-filter the actionable list before non-interactive use.
+                    if ([Console]::IsInputRedirected) {
+                        Write-SOKLog "  SKIP (non-interactive context; install $($tool.Name) interactively)" -Level Warn
+                        continue
+                    }
                     $answer = Read-Host "  Install from GitHub? [y/N]"
                     if ($answer -match '^[yY]') {
                         Write-SOKLog "  Installing $($tool.GitHubRepo)..." -Level Ignore
@@ -621,12 +629,42 @@ if ($checksumAsset) {
     $checksumPath = Join-Path $tmpDir $checksumAsset.name
     Invoke-WebRequest -Uri $checksumAsset.browser_download_url -OutFile $checksumPath -Headers $dlHeaders -TimeoutSec 30
     $actualHash = (Get-FileHash $downloadPath -Algorithm SHA256).Hash.ToLower()
-    if ((Get-Content $checksumPath -Raw) -match $actualHash) {
-        Write-SOKLog "  SHA-256 verified." -Level Success
+    # 2026-04-22 hardening: parse the checksum file and find the exact line matching
+    # our downloaded asset name, then compare the published hash against our computed
+    # hash. Prior -match check treated the checksum file as one big regex soup — a
+    # coincidental substring hit could pass verification for the wrong file (the
+    # 256-bit collision probability is ~0 but the semantics are wrong either way).
+    $checksumLines = Get-Content $checksumPath -ErrorAction Continue
+    $matchingLine = $checksumLines | Where-Object {
+        $_ -match '^\s*([0-9a-fA-F]{64})\s+[*]?(.+)$' -and $Matches[2].Trim() -eq $best.name
+    } | Select-Object -First 1
+    $verified = $false
+    if ($matchingLine -and $matchingLine -match '^\s*([0-9a-fA-F]{64})') {
+        $publishedHash = $Matches[1].ToLower()
+        if ($publishedHash -eq $actualHash) {
+            $verified = $true
+            Write-SOKLog "  SHA-256 verified (exact line-match): $publishedHash" -Level Success
+        } else {
+            Write-SOKLog "  Checksum MISMATCH — published: $publishedHash | actual: $actualHash — aborting." -Level Error
+        }
     } else {
-        Write-SOKLog "  Checksum MISMATCH — aborting." -Level Error
+        # Fallback: if we can't find an exact filename match, fall back to substring
+        # match but log it as a weaker verification (and surface which filename we
+        # expected to find a line for).
+        if ((Get-Content $checksumPath -Raw) -match $actualHash) {
+            $verified = $true
+            Write-SOKLog "  SHA-256 verified (substring match; no line for '$($best.name)' found — checksum file may use different naming)" -Level Warn
+        } else {
+            Write-SOKLog "  Checksum file has no line for '$($best.name)' and no substring match — aborting." -Level Error
+        }
+    }
+    if (-not $verified) {
         Remove-Item $tmpDir -Recurse -Force; exit 1
     }
+} else {
+    # 2026-04-22 hardening: explicit warning when release has no checksum asset —
+    # previously silent; operator might miss that they're installing unverified code.
+    Write-SOKLog "WARNING: no checksum asset published for this release — installation proceeds WITHOUT integrity verification. If this is unexpected, verify the release manually before any elevated invocation." -Level Warn
 }
 
 if (-not (Test-Path $InstallDir)) { New-Item -Path $InstallDir -ItemType Directory -Force | Out-Null }

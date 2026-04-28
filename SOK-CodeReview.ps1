@@ -37,8 +37,25 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-$scriptDir = if (Test-Path (Join-Path $PSScriptRoot 'SOK-Inventory.ps1')) { $PSScriptRoot }
-             else { 'C:\Users\shelc\Documents\Journal\Projects\scripts' }
+
+# M-14 fix 2026-04-21: scriptDir resolution now prefers a known-canonical absolute
+# path over PSScriptRoot-based inference. Prior logic tested PSScriptRoot for
+# SOK-Inventory.ps1 and used that dir if found — but after SOK-ProjectsReorg,
+# PSScriptRoot could point anywhere and happen to contain an unrelated
+# SOK-Inventory.ps1 (low probability but non-zero). New cascade:
+#   1. Canonical absolute path if it exists (matches SOK's ProjectsRoot convention)
+#   2. PSScriptRoot if it matches the canonical parent
+#   3. PSScriptRoot fallback (unchanged-behavior for novel deployments)
+$canonicalScripts = 'C:\Users\shelc\Documents\Journal\Projects\scripts'
+$scriptDir = if (Test-Path (Join-Path $canonicalScripts 'SOK-Inventory.ps1')) {
+    $canonicalScripts
+} elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'SOK-Inventory.ps1')) -and (Test-Path (Join-Path $PSScriptRoot 'common\SOK-Common.psm1'))) {
+    # PSScriptRoot also has SOK-Common.psm1 at expected relative path — high confidence
+    $PSScriptRoot
+} else {
+    # Last-resort fallback; may not be correct on non-standard deployments
+    $canonicalScripts
+}
 
 $modulePath = Join-Path $scriptDir 'common\SOK-Common.psm1'
 if (Test-Path $modulePath) { Import-Module $modulePath -Force }

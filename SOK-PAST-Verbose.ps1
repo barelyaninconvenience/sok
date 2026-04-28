@@ -84,7 +84,7 @@
     Skip Phase 3 (merge) of BackupRestructure.
 
 .NOTES
-    Author : SOK / CLAY_PC
+    Author : SOK / <HOST>
     Version: 1.0.0
     Requires: PowerShell 7.0+, Run as Administrator
 #>
@@ -103,7 +103,7 @@ param(
     [string]$OldSnapshot,
     [string]$NewSnapshot,
     [double]$AutoApproveThreshold = 16.66,
-    [string]$ComparatorOutputDir = "$env:USERPROFILE\Documents\SOK\Archives",
+    [string]$ComparatorOutputDir = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Archives",
     [string[]]$RestructureTargets = @("$env:USERPROFILE\Documents\Backup", "$env:USERPROFILE\Downloads"),
     [int]$MaxDepth = 13,
     [string]$ArchiveRoot = 'E:\Backup_Archive',
@@ -152,7 +152,7 @@ $USER_PROFILE   = 'C:\Users\shelc'
 # ---------------------------------------------------------------------------
 #
 #  MODULE 1 — InfraFix
-#  Repair 5 known broken environmental invariants on CLAY_PC.
+#  Repair 5 known broken environmental invariants on <HOST>.
 #  Each fix is its own explicit step so failures are isolated.
 #
 # ---------------------------------------------------------------------------
@@ -201,9 +201,18 @@ function Invoke-PASTInfraFix {
         # Find the best candidate: highest versioned node dir in ProgramData\nvm
         $bestNodeDir = $null
         if (Test-Path $nvmDataRoot) {
+            # Cluster-A MEDIUM fix 2026-04-21: lexicographic Sort-Object Name yields
+            # wrong ordering for semver directories ("v10" < "v2" < "v9"). Parse
+            # version number and sort numerically. Fallback to lexicographic if parse
+            # fails so novel directory names don't break discovery.
             $candidates = Get-ChildItem -Path $nvmDataRoot -Directory -ErrorAction SilentlyContinue |
                           Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } |
-                          Sort-Object Name -Descending
+                          Sort-Object -Descending @{
+                              Expression = {
+                                  try { [version]($_.Name -replace '^v','') }
+                                  catch { [version]'0.0.0' }
+                              }
+                          }, Name
             if ($candidates.Count -gt 0) {
                 $bestNodeDir = $candidates[0].FullName
             }
@@ -216,12 +225,38 @@ function Invoke-PASTInfraFix {
             if ($DryRun) {
                 Write-SOKLog "InfraFix FIX-1: [DRYRUN] Would remove $junctionPath and create junction -> $bestNodeDir" 'INFO'
             } else {
-                # Remove the old junction/directory if it exists before recreating
+                # C-3 backport 2026-04-21: protect against data loss if $junctionPath
+                # is a real directory (not a junction). Rename to .bak, attempt
+                # junction, rollback-on-failure. Junctions are pointer-only and
+                # safely removed via rmdir; real dirs get the safe path.
+                $_pastv_bak = $null
                 if (Test-Path $junctionPath) {
-                    Remove-Item -Path $junctionPath -Force -Recurse -ErrorAction SilentlyContinue
+                    $_pastv_itm = Get-Item $junctionPath -ErrorAction SilentlyContinue
+                    if ($_pastv_itm -and ($_pastv_itm.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                        cmd /c "rmdir `"$junctionPath`"" 2>$null
+                    } else {
+                        $_pastv_bak = "${junctionPath}.past_bak_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                        Rename-Item -Path $junctionPath -NewName $_pastv_bak -Force -ErrorAction Stop
+                    }
                 }
-                New-Item -ItemType Junction -Path $junctionPath -Target $bestNodeDir -ErrorAction Stop | Out-Null
-                Write-SOKLog "InfraFix FIX-1: Junction recreated $junctionPath -> $bestNodeDir" 'INFO'
+                try {
+                    New-Item -ItemType Junction -Path $junctionPath -Target $bestNodeDir -ErrorAction Stop | Out-Null
+                    if ($_pastv_bak -and (Test-Path $_pastv_bak)) {
+                        try { Remove-Item $_pastv_bak -Recurse -Force -ErrorAction Stop } catch {}
+                    }
+                    Write-SOKLog "InfraFix FIX-1: Junction recreated $junctionPath -> $bestNodeDir" 'INFO'
+                } catch {
+                    if ($_pastv_bak -and (Test-Path $_pastv_bak)) {
+                        try {
+                            if (Test-Path $junctionPath) { cmd /c "rmdir `"$junctionPath`"" 2>$null }
+                            Rename-Item -Path $_pastv_bak -NewName (Split-Path $junctionPath -Leaf) -Force -ErrorAction Stop
+                            Write-SOKLog "InfraFix FIX-1: restored source from backup after junction failure" 'WARN'
+                        } catch {
+                            Write-SOKLog "InfraFix FIX-1: CRITICAL restore failed — manual: $_pastv_bak -> $junctionPath" 'ERROR'
+                        }
+                    }
+                    Write-SOKLog "InfraFix FIX-1: junction creation failed: $_" 'ERROR'
+                }
             }
         }
     }
@@ -535,8 +570,11 @@ function Invoke-PASTInventory {
             try {
                 $npmOutput = & npm list -g --depth=0 2>&1
                 foreach ($line in $npmOutput) {
-                    # npm list -g output: "+-- packagename@1.2.3"
-                    if ($line -match '[+\\`]-{2}\s+(.+?)@([\d\.\w\-]+)') {
+                    # npm list -g output: "+-- packagename@1.2.3" or with UTF-8 tree chars
+                    # Cluster-A MEDIUM fix 2026-04-21: tolerate UTF-8 tree glyphs (│├└─)
+                    # that npm uses on some terminal codepages. Prior regex had a
+                    # backtick inside [] which PS treated as escape — confusing parse.
+                    if ($line -match '^[\s│├└─+\\-]+\s*(.+?)@([\d\.\w\-]+)$') {
                         $npmList.Add(@{ Name = $Matches[1]; Version = $Matches[2] })
                     }
                 }
@@ -648,7 +686,11 @@ function Invoke-PASTSpaceAudit {
     [CmdletBinding()]
     param(
         [switch]$DryRun,
-        [int]$MinSizeKB = 21138
+        [int]$MinSizeKB = 21138,
+        # Cluster-A LOW fix 2026-04-21: flattened-path heuristic threshold promoted
+        # from hardcoded magic number (was 5) to a parameter. Also referenced in
+        # SOK-PAST-v2 at the same threshold; keep defaults aligned.
+        [int]$FlattenedPathSegmentThreshold = 5
     )
 
     Write-SOKLog "SpaceAudit: Starting. MinSizeKB=$MinSizeKB DryRun=$DryRun" 'INFO'
@@ -726,18 +768,20 @@ function Invoke-PASTSpaceAudit {
         try {
             # Use robocopy to count bytes: /L = list only, /S = subdirs, /NP = no progress
             # /BYTES = byte counts, /NFL /NDL = no file/dir lists, /NJH /NJS = no headers
-            $roboOutput = & robocopy $topDir.FullName 'C:\NUL' /L /S /NP /BYTES /NFL /NDL /NJH 2>&1
+            # Cluster-A MEDIUM fix 2026-04-21: 'C:\NUL' is NOT the null device on
+            # Windows — NUL is the device, `\\.\NUL` is its device-path form, and
+            # 'C:\NUL' is interpreted by robocopy as a literal directory path rooted
+            # at C:. Running this code accumulated a phantom directory structure
+            # under C:\NUL\. Use a throwaway temp directory for list-only sizing.
+            $roboNulTarget = Join-Path $env:TEMP 'SOK_RoboNulListing'
+            $roboOutput = & robocopy $topDir.FullName $roboNulTarget /L /S /NP /BYTES /NFL /NDL /NJH 2>&1
             foreach ($roboLine in $roboOutput) {
                 if ($roboLine -match 'Bytes\s*:\s*([\d\.]+)\s*([\w]*)') {
-                    # Robocopy reports in bytes; convert to MB
-                    $rawVal  = [double]$Matches[1]
-                    $rawUnit = $Matches[2].ToLower()
-                    $sizeMB  = switch ($rawUnit) {
-                        'g'  { $rawVal * 1024 }
-                        'm'  { $rawVal }
-                        'k'  { $rawVal / 1024 }
-                        default { $rawVal / 1MB }
-                    }
+                    # Cluster-A LOW fix 2026-04-21: with /BYTES flag, robocopy ALWAYS
+                    # reports bytes with no unit suffix. The unit-aware switch below
+                    # was defensive but never-triggered dead code. Simplified to the
+                    # single bytes→MB conversion that's actually executed.
+                    $sizeMB = [double]$Matches[1] / 1MB
                     break
                 }
             }
@@ -900,7 +944,7 @@ function Invoke-PASTRestructure {
             $nameParts = $dir.Name -split '_'
             # Heuristic: if splitting on _ gives 5+ non-trivial segments, likely flattened
             $substantiveParts = $nameParts | Where-Object { $_.Length -ge 2 }
-            if ($substantiveParts.Count -ge 5) {
+            if ($substantiveParts.Count -ge $FlattenedPathSegmentThreshold) {
                 $finding = @{
                     Type     = 'FlattenedPath'
                     Path     = $dir.FullName
@@ -992,7 +1036,12 @@ function Invoke-PASTCompareSnapshots {
         [string]$OldSnapshot,
         [string]$NewSnapshot,
         [double]$AutoApproveThreshold = 16.66,
-        [string]$OutputDir = ''
+        # Cluster-A MEDIUM fix 2026-04-21: self-contained default. Prior code read
+        # $ComparatorOutputDir from script scope as a closure — worked under the
+        # current single-file load, broke if the function was ever imported into
+        # a different context. Now the default is explicit and the function no
+        # longer reaches into outer scope.
+        [string]$OutputDir = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Archives"
     )
 
     Write-SOKLog "CompareSnapshots: Starting. DryRun=$DryRun" 'INFO'
@@ -1012,7 +1061,7 @@ function Invoke-PASTCompareSnapshots {
     }
 
     $timestamp  = Get-Date -Format 'yyyyMMdd_HHmmss'
-    $resolvedOutputDir = if ($OutputDir -eq '') { $ComparatorOutputDir } else { $OutputDir }
+    $resolvedOutputDir = $OutputDir  # Cluster-A MEDIUM fix: no more script-scope closure
     $outputPath = "$resolvedOutputDir\SOK_Compare_$timestamp.txt"
 
     # Read both snapshot files with Get-Content (simple, not StreamReader).
@@ -1067,6 +1116,12 @@ function Invoke-PASTCompareSnapshots {
         Write-Host "Additions:    $($additions.Count)"
         Write-Host "Subtractions: $($subtractions.Count)"
         Write-Host ""
+        # Cluster-A MEDIUM fix 2026-04-21: fail-safe under non-interactive context
+        # (scheduled/SYSTEM run) — Read-Host would hang indefinitely. Abort cleanly.
+        if (-not [Environment]::UserInteractive) {
+            Write-SOKLog "CompareSnapshots: non-interactive context — diff report skipped. Re-run interactively to write." 'WARN'
+            return
+        }
         $confirm = Read-Host "Proceed with writing diff report? [y/N]"
         if ($confirm.ToLower() -ne 'y') {
             Write-SOKLog "CompareSnapshots: Operator declined — aborting." 'WARN'
@@ -1141,6 +1196,20 @@ function Invoke-PASTBackupRestructure {
     if ($RunPhase1) {
         Write-SOKLog "BackupRestructure: Phase 1 — deleting raw pre-extracted duplicates." 'INFO'
 
+        # Cluster-A HIGH fix 2026-04-21: resolve 7z early so the integrity-test
+        # gate below can verify each archive before deleting its raw folder.
+        # Previously $sevenZipExe was resolved after Phase 1 (line ~1216), so
+        # Phase 1 deletion had no integrity verification path available.
+        $phase1SevenZip = (Get-Command '7z' -ErrorAction SilentlyContinue)?.Source
+        if (-not $phase1SevenZip) {
+            $phase1SevenZip = 'C:\Program Files\7-Zip\7z.exe'
+            if (-not (Test-Path $phase1SevenZip)) { $phase1SevenZip = $null }
+        }
+        if (-not $phase1SevenZip) {
+            Write-SOKLog "BackupRestructure: Phase 1 ABORTED — 7z.exe not found; cannot verify archive integrity before raw-folder deletion. Install 7-Zip or run without -RunPhase1." 'ERROR'
+            return
+        }
+
         # Find all .7z files (non-continuation, i.e., not .7z.001, .7z.002, etc.)
         $sevenZipFiles = Get-ChildItem -Path $ArchiveRoot -Recurse -File -ErrorAction SilentlyContinue |
                          Where-Object { $_.Extension -eq '.7z' -and $_.Name -notmatch '\.\d{3}$' }
@@ -1154,8 +1223,19 @@ function Invoke-PASTBackupRestructure {
                 Write-SOKLog "BackupRestructure: Phase 1 — found duplicate raw dir: $rawDirPath" 'WARN'
 
                 if ($DryRun) {
-                    Write-SOKLog "BackupRestructure: Phase 1 [DRYRUN] Would delete $rawDirPath" 'INFO'
+                    Write-SOKLog "BackupRestructure: Phase 1 [DRYRUN] Would delete $rawDirPath (after 7z integrity test)" 'INFO'
                 } else {
+                    # Cluster-A HIGH fix 2026-04-21: verify archive integrity before
+                    # deletion. Corrupt/incomplete archive + raw-folder deletion is
+                    # irreversible data loss. Require exit 0 (strict success) — exit 1
+                    # means warnings (some files skipped) which is not safe to trust.
+                    & $phase1SevenZip t $archiveFile.FullName -bso0 -bsp0 2>&1 | Out-Null
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-SOKLog "BackupRestructure: Phase 1 — archive FAILED integrity test (exit=$LASTEXITCODE) — raw folder PRESERVED: $($archiveFile.Name)" 'ERROR'
+                        continue
+                    }
+                    Write-SOKLog "BackupRestructure: Phase 1 — archive integrity verified: $($archiveFile.Name)" 'INFO'
+
                     # Use robocopy /MIR to empty the directory (more reliable than Remove-Item -Recurse
                     # on long paths), then remove the empty shell.
                     $emptyTemp = [System.IO.Path]::GetTempPath() + 'SOK_EmptyMirrorSource'
@@ -1223,7 +1303,18 @@ function Invoke-PASTBackupRestructure {
                         if ($LASTEXITCODE -eq 0) {
                             Write-SOKLog "BackupRestructure: Phase 2 — extracted $($archive.Name)" 'INFO'
                         } else {
-                            Write-SOKLog "BackupRestructure: Phase 2 — 7z returned $LASTEXITCODE for $($archive.Name)" 'WARN'
+                            # Cluster-A MEDIUM fix 2026-04-21: translate 7z exit codes
+                            # into operator-actionable meanings. Prior "7z returned N"
+                            # message left the operator guessing what N meant.
+                            $exitMeaning = switch ($LASTEXITCODE) {
+                                1 { 'warnings (non-fatal, some files skipped)' }
+                                2 { 'fatal error' }
+                                7 { 'command-line error' }
+                                8 { 'out of memory' }
+                                255 { 'user stopped process' }
+                                default { 'unknown code' }
+                            }
+                            Write-SOKLog "BackupRestructure: Phase 2 — 7z exit $LASTEXITCODE ($exitMeaning) for $($archive.Name) — archive preserved for review" 'WARN'
                         }
                     } catch {
                         Write-SOKLog "BackupRestructure: Phase 2 — extraction failed for $($archive.Name): $_" 'WARN'

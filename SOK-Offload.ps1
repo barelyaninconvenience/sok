@@ -303,6 +303,13 @@ foreach ($target in $offloadTargets) {
                 RebuildCost  = $target.RebuildCost
                 SafetyScore  = $safetyScore
                 PostMoveCmd  = $target.PostMoveCmd
+                # L-10 (Cluster C) fix 2026-04-22: 1e9 composite-sort-key rationale.
+                # Priority is small-int (1-10); multiplying by 1e9 shifts it into the
+                # high 64-bit range so Priority dominates the sort, with -SizeKB as a
+                # tie-breaker (larger files within same Priority offloaded first).
+                # Boundary check: $sizeKB is int KB; a single target > 1e9 KB (~1 TB)
+                # would invert the ordering. Current targets peak ~50 GB so safe;
+                # refactor to tuple-sort if future use ever approaches TB scale.
                 SortKey      = ($target.Priority * 1000000000) - $sizeKB
             }) | Out-Null
             $totalViableKB += $sizeKB
@@ -431,7 +438,12 @@ foreach ($item in $planItems) {
             if ($l.Length -gt 0) { Write-SOKLog "  [robo] $l" -Level Debug }
         }
 
-        # Robocopy exit code semantics (non-standard — 0-7 are all success variants):
+        # Robocopy exit code semantics (non-standard — 0-7 are all success variants).
+        # L-3 (Cluster C) note 2026-04-22: Windows sysadmins often expect 0 = canonical
+        # "success", but robocopy's 0 means "nothing to do" (source already mirrors
+        # destination). Treating 0 as idempotent-success is correct for nightly /MIR
+        # mode where the expected steady-state IS "nothing changed." Exit 1 is the
+        # canonical "copied something" success signal.
         #   0 = No files copied, source and destination are in sync
         #   1 = One or more files copied successfully
         #   2 = Extra files/dirs found in destination (not copied, not error)
@@ -458,9 +470,18 @@ foreach ($item in $planItems) {
             Write-SOKLog "  Robocopy exit $roboExit — $roboExitMeaning" -Level $roboLevel
 
             if ($canSymlink) {
+                # C-5 fix 2026-04-21: replaced ErrorAction Continue with try/Stop/catch so
+                # post-/MOVE removal failures (locks/ACL) are surfaced explicitly. The
+                # mklink-prerequisite gate (Test-Path source) is preserved; on partial
+                # /MOVE both the removal error and junction-skip-with-data-preserved
+                # message reach the operator.
                 if (Test-Path $item.Path) {
                     Write-SOKLog "  Source still exists — cleaning up" -Level Warn
-                    Remove-Item -Path $item.Path -Recurse -Force -ErrorAction Continue
+                    try {
+                        Remove-Item -Path $item.Path -Recurse -Force -ErrorAction Stop
+                    } catch {
+                        Write-SOKLog "  Source removal failed: $($_.Exception.Message) — junction skipped (manual review needed)" -Level Error
+                    }
                 }
                 if (-not (Test-Path $item.Path)) {
                     # cmd /c needs quotes for paths with spaces — use proper PS escaping
@@ -472,6 +493,8 @@ foreach ($item in $planItems) {
                     } else {
                         Write-SOKLog "  Junction FAILED — manual reconfig needed" -Level Error
                     }
+                } else {
+                    Write-SOKLog "  Junction skipped (source not fully removed); data preserved at source $($item.Path) AND dest $destPath — operator must reconcile" -Level Warn
                 }
             }
 

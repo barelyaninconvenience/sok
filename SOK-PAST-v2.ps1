@@ -109,7 +109,7 @@
     Skip Phase 3 (merge) of ConsolidateBackups.
 
 .NOTES
-    Author : SOK / CLAY_PC
+    Author : SOK / <HOST>
     Version: 2.0.0
     Requires: PowerShell 7.0+, Run as Administrator
 #>
@@ -145,7 +145,7 @@ param(
     [string]$OldSnapshot = '',
     [string]$NewSnapshot = '',
     [double]$AutoApproveThreshold = 16.66,
-    [string]$ComparatorOutputDir = "$env:USERPROFILE\Documents\SOK\Archives",
+    [string]$ComparatorOutputDir = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Archives",
 
     # Backup consolidation parameters
     [string]$ArchiveRoot   = 'E:\Backup_Archive',
@@ -185,9 +185,17 @@ if (Test-Path $SOKCommonPath) {
 # ---------------------------------------------------------------------------
 $SCRIPT_NAME    = 'SOK-PAST-v2'
 $SCRIPT_VERSION = '2.0.0'
-$SOK_ROOT       = 'C:\Users\shelc\Documents\Journal\Projects\SOK'
+# Cluster-A MEDIUM fix 2026-04-21: use Resolve-RealUserProfile if available (from
+# SOK-Common v4.6.0 H-8 machinery); otherwise fall back to hardcoded shelc paths
+# for substrate-portability. Matches the pattern in 7 other SOK scripts.
+if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+    $USER_PROFILE = Resolve-RealUserProfile
+    $SOK_ROOT     = Join-Path $USER_PROFILE 'Documents\Journal\Projects\SOK'
+} else {
+    $USER_PROFILE = 'C:\Users\shelc'
+    $SOK_ROOT     = 'C:\Users\shelc\Documents\Journal\Projects\SOK'
+}
 $LOG_BASE       = "$SOK_ROOT\Logs"
-$USER_PROFILE   = 'C:\Users\shelc'
 
 # ---------------------------------------------------------------------------
 # Progressive enclosure resolution
@@ -254,7 +262,9 @@ function Get-SystemTruth {
     # --- Junctions ---
     # Collected once here. Both Repair-SystemInvariants and Save-TruthSnapshot
     # will reference this same map from the TruthSnapshot object.
-    $junctionScanRoots = @('C:\', 'C:\Users\shelc', 'C:\ProgramData')
+    # Cluster-A LOW fix 2026-04-21: derive user-profile root dynamically rather
+    # than hardcoding shelc. Matches the H-8 substrate-portability pattern.
+    $junctionScanRoots = @('C:\', $USER_PROFILE, 'C:\ProgramData')
     foreach ($scanRoot in $junctionScanRoots) {
         if (-not (Test-Path $scanRoot)) { continue }
         $depthLimit = if ($scanRoot -eq 'C:\') { 3 } else { 5 }
@@ -316,9 +326,12 @@ function Get-SystemTruth {
             },
             @{ Name = 'Npm'; Cmd = 'npm'; Args = @('list','-g','--depth=0');
                Parser = { param($lines)
+                   # Cluster-A MEDIUM fix 2026-04-21: match PAST-Verbose regex — tolerate
+                   # UTF-8 tree glyphs (│├└─) that npm uses on some terminal codepages.
+                   # Prior regex had a backtick inside [] which PS treated as escape.
                    $list = [System.Collections.Generic.List[hashtable]]::new()
                    foreach ($l in $lines) {
-                       if ($l -match '[+\\`]-{2}\s+(.+?)@([\d\.\w\-]+)') {
+                       if ($l -match '^[\s│├└─+\\-]+\s*(.+?)@([\d\.\w\-]+)$') {
                            $list.Add(@{ Name = $Matches[1]; Version = $Matches[2] })
                        }
                    }
@@ -490,7 +503,10 @@ function Measure-AccumulatedDebt {
     foreach ($dir in $cDirs) {
         $sizeMB = 0.0
         try {
-            $roboOut = & robocopy $dir.FullName 'C:\NUL' /L /S /NP /BYTES /NFL /NDL /NJH 2>&1
+            # Cluster-A MEDIUM fix 2026-04-21: see SOK-PAST-Verbose:755 for rationale.
+            # 'C:\NUL' is not the null device; use a throwaway temp dir for /L listing.
+            $roboNulTarget = Join-Path $env:TEMP 'SOK_RoboNulListing'
+            $roboOut = & robocopy $dir.FullName $roboNulTarget /L /S /NP /BYTES /NFL /NDL /NJH 2>&1
             foreach ($rl in $roboOut) {
                 if ($rl -match 'Bytes\s*:\s*([\d\.]+)\s*([\w]*)') {
                     $rawVal  = [double]$Matches[1]
@@ -594,7 +610,9 @@ function Measure-AccumulatedDebt {
         $nameFreq = [ordered]@{}
         foreach ($dir in $allDirs) {
             $n = $dir.Name.ToLower()
-            $nameFreq[$n] = if ($nameFreq.Contains($n)) { $nameFreq[$n] + 1 } else { 1 }
+            # Cluster-A LOW fix 2026-04-21: idiomatic hashtable counter.
+            if (-not $nameFreq.Contains($n)) { $nameFreq[$n] = 0 }
+            $nameFreq[$n]++
         }
         foreach ($n in ($nameFreq.Keys | Where-Object { $nameFreq[$_] -ge 3 })) {
             $instances = $allDirs | Where-Object { $_.Name.ToLower() -eq $n }
@@ -808,12 +826,48 @@ function Repair-SystemInvariants {
         } elseif ($DryRun) {
             Add-CheckResult 'FIX-1' 'DryRun' "Would recreate junction -> $bestNodeDir"
         } else {
+            # Cluster-A MEDIUM fix 2026-04-21: simplified backup-tracking. Prior code
+            # used Set-Variable/Get-Variable with Local scope as cross-try/catch
+            # plumbing, which is StrictMode-fragile (Get-Variable of undefined var
+            # errors under Set-StrictMode -Version Latest). Using a plain local var
+            # initialized at the top of the try is both simpler and strict-safe.
+            $_pastv2_bak = $null
             try {
-                if (Test-Path $junctionPath) { Remove-Item -Path $junctionPath -Force -Recurse -ErrorAction SilentlyContinue }
+                # C-3 backport 2026-04-21: if $junctionPath is a real directory
+                # (not an existing junction — content at stake), rename to .bak
+                # before removal so junction-creation failure doesn't destroy data.
+                if (Test-Path $junctionPath) {
+                    $itm = Get-Item $junctionPath -ErrorAction SilentlyContinue
+                    $isJunction = $itm -and ($itm.Attributes -band [System.IO.FileAttributes]::ReparsePoint)
+                    if ($isJunction) {
+                        # Safe to drop: pointer-only, no data destroyed
+                        cmd /c "rmdir `"$junctionPath`"" 2>$null
+                    } else {
+                        $_pastv2_bak = "${junctionPath}.past_bak_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                        Rename-Item -Path $junctionPath -NewName $_pastv2_bak -Force -ErrorAction Stop
+                    }
+                }
                 New-Item -ItemType Junction -Path $junctionPath -Target $bestNodeDir -ErrorAction Stop | Out-Null
+                # Post-creation verify + backup cleanup
+                $verified = (Get-Item $junctionPath -ErrorAction SilentlyContinue).Attributes -band [System.IO.FileAttributes]::ReparsePoint
+                if ($verified -and $_pastv2_bak -and (Test-Path $_pastv2_bak)) {
+                    try { Remove-Item $_pastv2_bak -Recurse -Force -ErrorAction Stop } catch {
+                        Write-SOKLog "  WARN: junction OK but backup $_pastv2_bak cleanup failed: $_" 'WARN'
+                    }
+                }
                 Add-CheckResult 'FIX-1' 'Fixed' "Junction recreated -> $bestNodeDir"
                 Write-SOKLog "Repair-SystemInvariants FIX-1: Recreated junction -> $bestNodeDir" 'INFO'
             } catch {
+                # Rollback: if backup exists and junction not created, restore
+                if ($_pastv2_bak -and (Test-Path $_pastv2_bak)) {
+                    try {
+                        if (Test-Path $junctionPath) { cmd /c "rmdir `"$junctionPath`"" 2>$null }
+                        Rename-Item -Path $_pastv2_bak -NewName (Split-Path $junctionPath -Leaf) -Force -ErrorAction Stop
+                        Write-SOKLog "Repair-SystemInvariants FIX-1: Restored source from backup after junction failure" 'WARN'
+                    } catch {
+                        Write-SOKLog "Repair-SystemInvariants FIX-1: CRITICAL restore failed — manual: $_pastv2_bak -> $junctionPath" 'ERROR'
+                    }
+                }
                 Add-CheckResult 'FIX-1' 'Error' "$_"
             }
         }
@@ -967,6 +1021,11 @@ function Invoke-SnapshotComparison {
     if ($changePercent -gt $AutoApproveThreshold -and -not $DryRun) {
         Write-Host ""
         Write-Host "WARNING: $changePercent% of lines changed (threshold: $AutoApproveThreshold%)"
+        # Cluster-A MEDIUM fix 2026-04-21: fail-safe under non-interactive context.
+        if (-not [Environment]::UserInteractive) {
+            Write-SOKLog "SnapshotComparison: non-interactive context — comparison skipped. Re-run interactively." 'WARN'
+            return $null
+        }
         $confirm = Read-Host "Proceed? [y/N]"
         if ($confirm.ToLower() -ne 'y') {
             Write-SOKLog "SnapshotComparison: Operator declined." 'WARN'
@@ -1025,6 +1084,20 @@ function Invoke-BackupConsolidation {
     # Phase 1 (opt-in): delete raw pre-extracted duplicates
     if ($RunPhase1) {
         Write-SOKLog "BackupConsolidation: Phase 1 — removing raw pre-extracted duplicates." 'INFO'
+
+        # Cluster-A HIGH fix 2026-04-21: resolve 7z early for integrity-gate.
+        # Same remediation as SOK-PAST and SOK-PAST-Verbose: never delete a raw
+        # folder without first verifying its .7z archive passes integrity test.
+        $phase1SevenZip = (Get-Command '7z' -ErrorAction SilentlyContinue)?.Source
+        if (-not $phase1SevenZip) {
+            $phase1SevenZip = 'C:\Program Files\7-Zip\7z.exe'
+            if (-not (Test-Path $phase1SevenZip)) { $phase1SevenZip = $null }
+        }
+        if (-not $phase1SevenZip) {
+            Write-SOKLog "BackupConsolidation: Phase 1 ABORTED — 7z.exe not found; cannot verify archive integrity before raw-folder deletion." 'ERROR'
+            return
+        }
+
         $archives7z = Get-ChildItem -Path $ArchiveRoot -Recurse -File -ErrorAction SilentlyContinue |
                       Where-Object { $_.Extension -eq '.7z' -and $_.Name -notmatch '\.\d{3}$' }
 
@@ -1032,8 +1105,15 @@ function Invoke-BackupConsolidation {
             $rawDir = Join-Path $arc.DirectoryName ([System.IO.Path]::GetFileNameWithoutExtension($arc.FullName))
             if (Test-Path $rawDir -PathType Container) {
                 if ($DryRun) {
-                    Write-SOKLog "BackupConsolidation: Phase 1 [DRYRUN] Would delete $rawDir" 'INFO'
+                    Write-SOKLog "BackupConsolidation: Phase 1 [DRYRUN] Would delete $rawDir (after 7z integrity test)" 'INFO'
                 } else {
+                    # Cluster-A HIGH fix 2026-04-21: verify integrity before delete.
+                    & $phase1SevenZip t $arc.FullName -bso0 -bsp0 2>&1 | Out-Null
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-SOKLog "BackupConsolidation: Phase 1 — archive FAILED integrity test (exit=$LASTEXITCODE) — raw folder PRESERVED: $($arc.Name)" 'ERROR'
+                        continue
+                    }
+                    Write-SOKLog "BackupConsolidation: Phase 1 — archive integrity verified: $($arc.Name)" 'INFO'
                     try {
                         $emptyTemp = Join-Path ([System.IO.Path]::GetTempPath()) 'SOK_EmptyMirrorSource'
                         if (-not (Test-Path $emptyTemp)) { New-Item -ItemType Directory -Path $emptyTemp -Force | Out-Null }

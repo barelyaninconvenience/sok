@@ -1,0 +1,650 @@
+{
+  "MediaMonkey 2024": {
+    "X": 450,
+    "Y": 1433
+  },
+  "NetBird": {
+    "X": 375,
+    "Y": 1265
+  },
+  "ZAP 2.17.0": {
+    "X": 300,
+    "Y": 1265
+  },
+  "Documents": {
+    "X": 225,
+    "Y": 929
+  },
+  "OBS Studio": {
+    "X": 525,
+    "Y": 845
+  },
+  "Advanced IP Scanner": {
+    "X": 525,
+    "Y": 1013
+  },
+  "CPUID CPU-Z": {
+    "X": 600,
+    "Y": 845
+  },
+  "Podman Desktop": {
+    "X": 0,
+    "Y": 593
+  },
+  "Julia 1.12.5": {
+    "X": 150,
+    "Y": 89
+  },
+  "SumatraPDF": {
+    "X": 75,
+    "Y": 593
+  },
+  "Oracle VirtualBox": {
+    "X": 450,
+    "Y": 1181
+  },
+  "GitHub Desktop": {
+    "X": 0,
+    "Y": 677
+  },
+  "CDBurnerXP": {
+    "X": 450,
+    "Y": 173
+  },
+  "_3_Sub Writings": {
+    "X": 150,
+    "Y": 1097
+  },
+  "OpenVPN GUI": {
+    "X": 375,
+    "Y": 257
+  },
+  "_3_Sub memory": {
+    "X": 75,
+    "Y": 1265
+  },
+  "Firefox": {
+    "X": 525,
+    "Y": 761
+  },
+  "_2_Work UC MS-IS": {
+    "X": 225,
+    "Y": 593
+  },
+  "AppData Roaming": {
+    "X": 225,
+    "Y": 425
+  },
+  "Arduino IDE": {
+    "X": 0,
+    "Y": 1097
+  },
+  "Tableau Public 2026.1": {
+    "X": 450,
+    "Y": 509
+  },
+  "Tor Browser": {
+    "X": 75,
+    "Y": 1181
+  },
+  "Adobe Acrobat": {
+    "X": 375,
+    "Y": 89
+  },
+  "AppData Local": {
+    "X": 150,
+    "Y": 929
+  },
+  "Zettlr": {
+    "X": 0,
+    "Y": 1265
+  },
+  "Blender 5.1": {
+    "X": 150,
+    "Y": 5
+  },
+  "Advanced Port Scanner": {
+    "X": 525,
+    "Y": 425
+  },
+  "Kindle": {
+    "X": 75,
+    "Y": 509
+  },
+  "_2_Work Projects": {
+    "X": 225,
+    "Y": 341
+  },
+  "GlassWire": {
+    "X": 375,
+    "Y": 341
+  },
+  "Recycle Bin": {
+    "X": 675,
+    "Y": 5
+  },
+  "AI Studio 2026.0.1": {
+    "X": 450,
+    "Y": 929
+  },
+  "Squid Terminal": {
+    "X": 525,
+    "Y": 1349
+  },
+  "OneDrive UC": {
+    "X": 225,
+    "Y": 509
+  },
+  "Google Slides": {
+    "X": 75,
+    "Y": 761
+  },
+  "HTTP Toolkit": {
+    "X": 0,
+    "Y": 341
+  },
+  "PeaZip": {
+    "X": 225,
+    "Y": 173
+  },
+  "Listary": {
+    "X": 225,
+    "Y": 89
+  },
+  "gVim Easy 9.2": {
+    "X": 375,
+    "Y": 677
+  },
+  "Foxit PDF Reader": {
+    "X": 525,
+    "Y": 341
+  },
+  "Cursor": {
+    "X": 600,
+    "Y": 509
+  },
+  "CPUID HWMonitor": {
+    "X": 600,
+    "Y": 341
+  },
+  "Claude config": {
+    "X": 225,
+    "Y": 5
+  },
+  "LM Studio": {
+    "X": 0,
+    "Y": 761
+  },
+  "_2_Work Journal": {
+    "X": 225,
+    "Y": 677
+  },
+  "Videos": {
+    "X": 225,
+    "Y": 1181
+  },
+  "_3_Sub Contacts_Vault": {
+    "X": 150,
+    "Y": 1433
+  },
+  "BleachBit": {
+    "X": 525,
+    "Y": 257
+  },
+  "ShareX": {
+    "X": 150,
+    "Y": 1349
+  },
+  "Malwarebytes Windows Firewall Control": {
+    "X": 450,
+    "Y": 593
+  },
+  "Malwarebytes": {
+    "X": 375,
+    "Y": 5
+  },
+  "Altair Analytics Workbench 2026": {
+    "X": 300,
+    "Y": 761
+  },
+  "gVim 9.2": {
+    "X": 375,
+    "Y": 929
+  },
+  "Bitwarden": {
+    "X": 0,
+    "Y": 509
+  },
+  "Google Gemini": {
+    "X": 0,
+    "Y": 5
+  },
+  "GIMP 3.2.0": {
+    "X": 150,
+    "Y": 257
+  },
+  "SUPERAntiSpyware Free Edition": {
+    "X": 375,
+    "Y": 1349
+  },
+  "Winamp": {
+    "X": 525,
+    "Y": 929
+  },
+  "Kleopatra": {
+    "X": 375,
+    "Y": 1433
+  },
+  "Google Docs": {
+    "X": 75,
+    "Y": 845
+  },
+  "TeraCopy": {
+    "X": 600,
+    "Y": 173
+  },
+  "LibreOffice 26.2": {
+    "X": 450,
+    "Y": 1013
+  },
+  "Signal": {
+    "X": 0,
+    "Y": 1349
+  },
+  "PrivaZer": {
+    "X": 375,
+    "Y": 509
+  },
+  "Discord": {
+    "X": 75,
+    "Y": 89
+  },
+  "Recuva": {
+    "X": 450,
+    "Y": 341
+  },
+  "OpenOffice 4.1.16": {
+    "X": 450,
+    "Y": 1349
+  },
+  "CocosDashboard.exe": {
+    "X": 600,
+    "Y": 1349
+  },
+  "Hoppscotch": {
+    "X": 525,
+    "Y": 1433
+  },
+  "Grammarly": {
+    "X": 75,
+    "Y": 1349
+  },
+  "IDA Freeware 8.3": {
+    "X": 600,
+    "Y": 5
+  },
+  "R 4.5.3": {
+    "X": 525,
+    "Y": 173
+  },
+  "ONLYOFFICE": {
+    "X": 375,
+    "Y": 173
+  },
+  "Unity Hub": {
+    "X": 375,
+    "Y": 1181
+  },
+  "Audacity": {
+    "X": 600,
+    "Y": 1013
+  },
+  "TeamViewer": {
+    "X": 450,
+    "Y": 425
+  },
+  "Steam": {
+    "X": 525,
+    "Y": 1181
+  },
+  "Microsoft Edge Dev": {
+    "X": 300,
+    "Y": 845
+  },
+  "MarkText": {
+    "X": 0,
+    "Y": 1013
+  },
+  "mRemoteNG": {
+    "X": 375,
+    "Y": 593
+  },
+  "_3_Sub scripts": {
+    "X": 150,
+    "Y": 1181
+  },
+  "Downloads": {
+    "X": 225,
+    "Y": 1013
+  },
+  "_1_Docs MEMORY.md": {
+    "X": 75,
+    "Y": 1433
+  },
+  "Google Drive": {
+    "X": 375,
+    "Y": 1013
+  },
+  "Launchy": {
+    "X": 525,
+    "Y": 5
+  },
+  "Tableau 2023.2": {
+    "X": 450,
+    "Y": 677
+  },
+  "Squid Server Tray": {
+    "X": 450,
+    "Y": 257
+  },
+  "_1_Docs CLAUDE.md": {
+    "X": 150,
+    "Y": 845
+  },
+  "SpeedFan": {
+    "X": 150,
+    "Y": 761
+  },
+  "Google Earth Pro": {
+    "X": 300,
+    "Y": 1013
+  },
+  "Microsoft Edge": {
+    "X": 300,
+    "Y": 929
+  },
+  "gVim Read only 9.2": {
+    "X": 375,
+    "Y": 761
+  },
+  "Music": {
+    "X": 225,
+    "Y": 1265
+  },
+  "AppFlowy": {
+    "X": 150,
+    "Y": 677
+  },
+  "Logseq": {
+    "X": 0,
+    "Y": 1181
+  },
+  "Everything": {
+    "X": 525,
+    "Y": 593
+  },
+  "Program Files": {
+    "X": 225,
+    "Y": 257
+  },
+  "_4_Drive C": {
+    "X": 225,
+    "Y": 1349
+  },
+  "Joplin": {
+    "X": 450,
+    "Y": 89
+  },
+  "Obsidian": {
+    "X": 75,
+    "Y": 5
+  },
+  "TablePlus": {
+    "X": 600,
+    "Y": 1097
+  },
+  "MobaXterm": {
+    "X": 300,
+    "Y": 509
+  },
+  "Zoom Workplace": {
+    "X": 375,
+    "Y": 1097
+  },
+  "Evernote": {
+    "X": 300,
+    "Y": 1433
+  },
+  "CrystalDiskMark 9": {
+    "X": 75,
+    "Y": 1097
+  },
+  "Insomnia": {
+    "X": 0,
+    "Y": 1433
+  },
+  "Brave": {
+    "X": 0,
+    "Y": 89
+  },
+  "Autopsy 4.22.1": {
+    "X": 375,
+    "Y": 425
+  },
+  "SoapUI 5.8.0": {
+    "X": 300,
+    "Y": 593
+  },
+  "Lens": {
+    "X": 450,
+    "Y": 5
+  },
+  "Google Chrome": {
+    "X": 300,
+    "Y": 1097
+  },
+  "Disk Drill": {
+    "X": 300,
+    "Y": 1349
+  },
+  "Process Lasso": {
+    "X": 375,
+    "Y": 845
+  },
+  "Pictures": {
+    "X": 225,
+    "Y": 1097
+  },
+  "GPU-Z": {
+    "X": 525,
+    "Y": 509
+  },
+  "WinMerge": {
+    "X": 600,
+    "Y": 257
+  },
+  "Process Hacker 2": {
+    "X": 75,
+    "Y": 929
+  },
+  "Comet": {
+    "X": 0,
+    "Y": 257
+  },
+  "IDA Freeware 8.4": {
+    "X": 600,
+    "Y": 89
+  },
+  "_4_Drive D": {
+    "X": 300,
+    "Y": 5
+  },
+  "Thunderbird": {
+    "X": 525,
+    "Y": 1097
+  },
+  "SQLiteStudio": {
+    "X": 525,
+    "Y": 1265
+  },
+  "SAP Logon": {
+    "X": 450,
+    "Y": 761
+  },
+  "calibre 64bit - E-book management": {
+    "X": 525,
+    "Y": 89
+  },
+  "_1_Docs State_Snapshot": {
+    "X": 150,
+    "Y": 593
+  },
+  "_4_Drive G": {
+    "X": 225,
+    "Y": 1433
+  },
+  "Speccy": {
+    "X": 600,
+    "Y": 1265
+  },
+  "Epic Games Launcher": {
+    "X": 450,
+    "Y": 845
+  },
+  "CyberLink Power2Go 8.0.zip": {
+    "X": 300,
+    "Y": 341
+  },
+  "GPT4All": {
+    "X": 75,
+    "Y": 1013
+  },
+  "_3_Sub SOK": {
+    "X": 225,
+    "Y": 761
+  },
+  "_3_Sub Learning": {
+    "X": 150,
+    "Y": 1013
+  },
+  "balenaEtcher": {
+    "X": 0,
+    "Y": 425
+  },
+  "_4_Drive E": {
+    "X": 300,
+    "Y": 89
+  },
+  "CyberLink PowerDirector 19.0.zip": {
+    "X": 300,
+    "Y": 257
+  },
+  "Inkscape": {
+    "X": 525,
+    "Y": 677
+  },
+  "Slack": {
+    "X": 600,
+    "Y": 425
+  },
+  "QGIS 4.0.0": {
+    "X": 600,
+    "Y": 1433
+  },
+  "SoapUI 5.9.1": {
+    "X": 300,
+    "Y": 677
+  },
+  "CCleaner": {
+    "X": 600,
+    "Y": 929
+  },
+  "CyberLink Media Suite 16.0.zip": {
+    "X": 300,
+    "Y": 425
+  },
+  "CyberLink PowerDVD 14.0.zip": {
+    "X": 300,
+    "Y": 173
+  },
+  "HeidiSQL(x64)": {
+    "X": 450,
+    "Y": 1097
+  },
+  "_1_Docs Operating_Stack": {
+    "X": 150,
+    "Y": 509
+  },
+  "Beyond Compare 5": {
+    "X": 600,
+    "Y": 677
+  },
+  "photorec_win": {
+    "X": 150,
+    "Y": 341
+  },
+  "HeidiSQL": {
+    "X": 600,
+    "Y": 1181
+  },
+  "Postman": {
+    "X": 75,
+    "Y": 425
+  },
+  "Notion": {
+    "X": 75,
+    "Y": 173
+  },
+  "HandBrake": {
+    "X": 600,
+    "Y": 761
+  },
+  "ProgramData": {
+    "X": 225,
+    "Y": 845
+  },
+  "Google Sheets": {
+    "X": 75,
+    "Y": 677
+  },
+  "Power BI Desktop": {
+    "X": 300,
+    "Y": 1181
+  },
+  "Nmap - Zenmap GUI": {
+    "X": 75,
+    "Y": 257
+  },
+  "WinSCP": {
+    "X": 450,
+    "Y": 1265
+  },
+  "Flow Launcher": {
+    "X": 0,
+    "Y": 173
+  },
+  "Vivaldi": {
+    "X": 0,
+    "Y": 845
+  },
+  "_1_Docs Re_Informed_Queue": {
+    "X": 150,
+    "Y": 425
+  },
+  "_3_Sub ML (session logs)": {
+    "X": 150,
+    "Y": 1265
+  },
+  "Element": {
+    "X": 0,
+    "Y": 929
+  },
+  "qphotorec_win": {
+    "X": 150,
+    "Y": 173
+  },
+  "VLC media player": {
+    "X": 600,
+    "Y": 593
+  }
+}

@@ -31,7 +31,13 @@ param(
         "$env:USERPROFILE\Downloads"
     ),
     [int]$MaxDepth = 13,
-    [ValidateSet('Report', 'Flatten')]
+    # H-7 fix 2026-04-21: 'Flatten' option removed from ValidateSet.
+    # Prior ValidateSet accepted 'Flatten' but no Flatten implementation existed
+    # anywhere in the script — `-Action Flatten` was a silent no-op that produced
+    # a Report anyway. Users who ran it expecting restructure-work would see a
+    # report and assume completion. Parameter is now Report-only; any prior
+    # automation passing 'Flatten' will fail loud instead of silently reporting.
+    [ValidateSet('Report')]
     [string]$Action = 'Report'
 )
 
@@ -72,7 +78,10 @@ foreach ($target in $TargetPaths) {
     $enumOpts = [System.IO.EnumerationOptions]::new()
     $enumOpts.RecurseSubdirectories = $true
     $enumOpts.IgnoreInaccessible = $true
-    $enumOpts.AttributesToSkip = [System.IO.FileAttributes]::ReparsePoint
+    # C-M-8 fix 2026-04-21: consistency with SOK-SpaceAudit line 351 — skip
+    # both ReparsePoint AND System attributes. System flag suppresses noise from
+    # System Volume Information, $Recycle.Bin, and similar protected roots.
+    $enumOpts.AttributesToSkip = [System.IO.FileAttributes]::ReparsePoint -bor [System.IO.FileAttributes]::System
 
     $dirs = try {
         [System.IO.Directory]::EnumerateDirectories($target, '*', $enumOpts)

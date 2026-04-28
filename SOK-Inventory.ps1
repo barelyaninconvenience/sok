@@ -14,7 +14,7 @@
     [FIX] All v2 fixes preserved (Scoop 3-tier, Node.js, Size=0 guard, KB)
 
 .PARAMETER OutputPath
-    Path for the JSON output. Defaults to Documents\SOK\Inventory\
+    Path for the JSON output. Defaults to Documents\Journal\Projects\SOK\Inventory\
 
 .PARAMETER ScanCaliber
     1=Quick (packages only), 2=Standard (+registry+services), 3=Deep (+hashes)
@@ -69,18 +69,22 @@ if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
 }
 
 # ── SYSTEM-CONTEXT PATH RESOLUTION ──
+# H-8 fix 2026-04-21: Substrate Thesis portability via Resolve-RealUserProfile.
 if ($env:USERPROFILE -like '*systemprofile*') {
-    $env:USERPROFILE  = 'C:\Users\shelc'
-    $env:LOCALAPPDATA = 'C:\Users\shelc\AppData\Local'
-    $env:APPDATA      = 'C:\Users\shelc\AppData\Roaming'
-    Write-SOKLog '[SYSTEM-CONTEXT] Remapped profile env vars to C:\Users\shelc' -Level Warn
+    $realProfile = if (Get-Command Resolve-RealUserProfile -ErrorAction SilentlyContinue) {
+        Resolve-RealUserProfile -Fallback 'C:\Users\shelc'
+    } else { 'C:\Users\shelc' }
+    $env:USERPROFILE  = $realProfile
+    $env:LOCALAPPDATA = "$realProfile\AppData\Local"
+    $env:APPDATA      = "$realProfile\AppData\Roaming"
+    Write-SOKLog "[SYSTEM-CONTEXT] Remapped profile env vars to $realProfile" -Level Warn
 }
 
 $errors = [System.Collections.ArrayList]::new()
 $warnings = [System.Collections.ArrayList]::new()
 
 if (-not $OutputPath) {
-    $outDir = if (Get-Command Get-ScriptLogDir -ErrorAction SilentlyContinue) { Get-ScriptLogDir -ScriptName 'SOK-Inventory' } else { Join-Path $env:USERPROFILE 'Documents\SOK\Inventory' }
+    $outDir = if (Get-Command Get-ScriptLogDir -ErrorAction SilentlyContinue) { Get-ScriptLogDir -ScriptName 'SOK-Inventory' } else { Join-Path $env:USERPROFILE 'Documents\Journal\Projects\SOK\Inventory' }
     if (-not (Test-Path $outDir)) { New-Item -Path $outDir -ItemType Directory -Force | Out-Null }
     $ts = Get-Date -Format 'yyyyMMdd_HHmmss'
     $OutputPath = Join-Path $outDir "SOK_Inventory_${ts}.json"
@@ -580,11 +584,33 @@ if ($ScanCaliber -ge 2) {
             'HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
             'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*'
         )
+        # MEDIUM-3 fix 2026-04-21: sanitize InstallLocation paths that intersect
+        # known credential-bearing directories before serializing into the
+        # inventory JSON. Inventory output may be uploaded as MCP context, posted
+        # to GitHub, or shared with auditors — leaking paths to .sok-secrets,
+        # .ssh, .gnupg, etc. is a recon surface even when contents stay encrypted.
+        # Replacement leaves the parent directory visible (`C:\Users\shelc`) so
+        # the program is still recognizable, but redacts the leaf.
+        $sensitivePathFragments = @(
+            '\.sok-secrets', '\.ssh', '\.gnupg', '\.aws', '\.azure', '\.kube',
+            '\.docker', '\.netrc', '\OAuth\', '\PII\', '\Credentials\',
+            '\.config\gh\hosts'
+        )
+        $sanitizePath = {
+            param([string]$p)
+            if ([string]::IsNullOrWhiteSpace($p)) { return $p }
+            foreach ($frag in $sensitivePathFragments) {
+                if ($p -like "*$frag*") {
+                    return ($p -replace [regex]::Escape($frag), '\<REDACTED-SENSITIVE-PATH>')
+                }
+            }
+            return $p
+        }
         $programs = @($regPaths | ForEach-Object { Get-ItemProperty $_ -ErrorAction SilentlyContinue } |
             Where-Object { $_.DisplayName } | ForEach-Object {
                 [ordered]@{
                     name = $_.DisplayName; version = $_.DisplayVersion; publisher = $_.Publisher
-                    install_date = $_.InstallDate; install_location = $_.InstallLocation
+                    install_date = $_.InstallDate; install_location = & $sanitizePath $_.InstallLocation
                     size_kb = if ($_.EstimatedSize) { $_.EstimatedSize } else { $null }
                 }
             } | Sort-Object { $_.name })
@@ -625,7 +651,10 @@ $completeness = [ordered]@{
 # Auto-detect previous run
 if (-not $PreviousRunPath) {
     $prevDir = Split-Path $OutputPath
-    $prevRuns = Get-ChildItem -Path $prevDir -Filter 'SOK_Inventory_*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+    # MEDIUM-8 fix 2026-04-21: wrap in @() to guarantee array semantics.
+    # Get-ChildItem returns $null when no matches exist OR a single FileInfo when
+    # exactly one matches — either way the unwrap makes .Count unreliable.
+    $prevRuns = @(Get-ChildItem -Path $prevDir -Filter 'SOK_Inventory_*.json' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
     if ($prevRuns.Count -gt 0) {
         # Skip the one we're about to write
         $PreviousRunPath = ($prevRuns | Where-Object { $_.FullName -ne $OutputPath } | Select-Object -First 1).FullName

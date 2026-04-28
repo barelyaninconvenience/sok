@@ -2,7 +2,7 @@
 <#
 .SYNOPSIS
     Export-SoftwareManifest v1.0.0 — Generate a comprehensive Markdown document of all
-    installed software, tools, package managers, and managed packages on CLAY_PC.
+    installed software, tools, package managers, and managed packages on <HOST>.
 .DESCRIPTION
     Queries every package manager and software source on the system and writes a unified
     Markdown document. Intended as the authoritative human-readable inventory for:
@@ -277,7 +277,7 @@ if ($DryRun) {
 if (-not (Test-Path $OutputDir)) { New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null }
 
 $header = @"
-# CLAY_PC Software Manifest
+# <HOST> Software Manifest
 
 **Generated:** $dateLabel
 **Host:** $env:COMPUTERNAME

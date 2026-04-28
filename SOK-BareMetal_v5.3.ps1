@@ -5,7 +5,7 @@
 <#
 .SYNOPSIS
     SOK-BareMetal v5.3 FINAL — Exhaustive Bare-Metal Restoration
-    Host: CLAY_PC | User: shelc | Zero-State Assumption
+    Host: <HOST> | User: shelc | Zero-State Assumption
     D: unmounted | E: USB-SSD (SOK target) | G: Google Drive VFS
 .DESCRIPTION
     Complete reconstruction of the operator environment from a zero-state machine.
@@ -42,7 +42,7 @@
             parse error on script load before any execution. Historical context
             preserved inside this synopsis block only.
     FIX-81  Python version updated: 3.13 -> 3.14 throughout.
-            CLAY_PC runs py -3.14; py -3.13 is uninstalled (stale launcher
+            <HOST> runs py -3.14; py -3.13 is uninstalled (stale launcher
             entry). Affects: winget install ID, all py -m pip invocations,
             NOTE-G, and Batch 7 verification.
     FIX-82  NPM global packages added to Batch 5.
@@ -126,7 +126,27 @@ param(
 $ErrorActionPreference  = "Continue"
 $VerbosePreference      = "Continue"
 $ProgressPreference     = "SilentlyContinue"   # prevents progress bar in logs
-$logDir = "C:\Admin\Logs\V5_Restore_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+
+# M-11 fix 2026-04-21: route logs to SOK\Logs\BareMetal\ when the SOK tree is
+# already present (subsequent runs after initial bootstrap). Falls back to
+# C:\Admin\Logs\ on true zero-state (first run, no scripts\common\ yet). This
+# reconciles the CLAUDE.md §2 SOK Boundaries rule with BareMetal's
+# bootstrap-from-nothing reality — the first run can't route into SOK\Logs\
+# because the tree doesn't exist yet, but every re-run should.
+$_ts = Get-Date -Format 'yyyyMMdd_HHmmss'
+$_sokLogCandidate = $null
+foreach ($_cand in @(
+    "$env:USERPROFILE\Documents\Journal\Projects\SOK\Logs\BareMetal",
+    "C:\Users\shelc\Documents\Journal\Projects\SOK\Logs\BareMetal"
+)) {
+    $_parent = Split-Path $_cand -Parent
+    if (Test-Path $_parent) { $_sokLogCandidate = $_cand; break }
+}
+if ($_sokLogCandidate) {
+    $logDir = Join-Path $_sokLogCandidate "V5_Restore_$_ts"
+} else {
+    $logDir = "C:\Admin\Logs\V5_Restore_$_ts"   # bootstrap-only fallback
+}
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 Start-Transcript -Path "$logDir\Verbose_Terminal_Output.txt" -Append
 $state = @{
@@ -283,7 +303,7 @@ function Invoke-Package {
             if (-not $success) { throw "Exit code $($proc.ExitCode)" }
         }
         elseif ($Manager -eq "pip") {
-            # FIX-81: py -3.14 (was py -3.13; CLAY_PC runs 3.14, 3.13 is uninstalled)
+            # FIX-81: py -3.14 (was py -3.13; <HOST> runs 3.14, 3.13 is uninstalled)
             # Avoids Altair embedded Python collision (v4 FLAG 5)
             $proc = Start-Process "py" `
                 -ArgumentList "-3.14 -m pip install --upgrade --quiet $Package" `
@@ -347,6 +367,15 @@ function Invoke-BatchPause {
     Write-Host "  BATCH COMPLETE : $BatchName" -ForegroundColor White
     Write-Host "  Success: $($state.Success.Count)  |  Skipped: $($state.Skipped.Count)  |  Failed: $($state.Failed.Count)" -ForegroundColor White
     Write-Host "$('=' * 72)" -ForegroundColor DarkCyan
+    # 2026-04-22 polish: non-interactive guard. BareMetal is interactive-by-design,
+    # but if ever invoked from a pipeline (e.g., operator tried piping `yes | ...`)
+    # we want explicit behavior. Default to halt + preserve state — BareMetal's
+    # multi-batch progression is too destructive to auto-advance without operator
+    # consent on each boundary.
+    if ([Console]::IsInputRedirected) {
+        Write-Console "Non-interactive context detected. BareMetal batches are interactive-by-design; halting at $BatchName boundary. State saved; re-run interactively to continue." "WARN"
+        Export-State; Stop-Transcript; exit
+    }
     $ans = Read-Host "Proceed to next batch? (Y to continue / N or Exit to halt safely)"
     if ($ans -match "^[NnEe]") {
         Write-Console "Operator halted. State saved." "WARN"
@@ -433,12 +462,70 @@ Write-Console "Phase 0 complete. Review console for any AV requiring manual remo
 Write-Console "=== BATCH 1: Core Substrate, Languages & Foundation ===" "SECTION"
 # Establish package managers first
 Set-ExecutionPolicy Bypass -Scope Process -Force
+
+# H-1 fix 2026-04-21: supply-chain protection on substrate recovery.
+# Old behavior: Invoke-Expression on a remote DownloadString with no hash pin.
+# A compromised CDN or DNS-hijack scenario executes arbitrary PowerShell as
+# admin on a zero-state recovery machine — the worst possible supply-chain
+# surface because nothing else is installed yet to detect the compromise.
+# New behavior: download to file, hash, verify against pinned SHA256 (if set),
+# then dot-source. When hash pin is empty, operate in TOFU mode (trust on
+# first use): log the observed hash to the install log so the operator can
+# pin it for subsequent runs. Either way, the IEX-on-DownloadString pattern
+# is replaced with a file-backed, observable install path.
+function Install-BootstrapScript {
+    param(
+        [string]$Url,
+        [string]$ExpectedSha256,   # empty string = TOFU mode (log + proceed with warning)
+        [string]$Description,
+        [string[]]$ArgsList = @()   # passed to the bootstrap script via & $path @ArgsList
+    )
+    Write-Console "  Downloading $Description from $Url" "INFO"
+    $tmp = Join-Path $env:TEMP ("bootstrap_" + [System.Guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        [System.Net.ServicePointManager]::SecurityProtocol =
+            [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+        (New-Object System.Net.WebClient).DownloadFile($Url, $tmp)
+        if (-not (Test-Path $tmp)) { throw "Download failed (file not present): $Url" }
+        $actual = (Get-FileHash $tmp -Algorithm SHA256).Hash
+        Write-Console "    Observed SHA256: $actual" "INFO"
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256)) {
+            if ($actual -ne $ExpectedSha256) {
+                throw "Checksum mismatch for $Description. Expected $ExpectedSha256; got $actual. Refusing to execute."
+            }
+            Write-Console "    Checksum verified against pinned hash." "OK"
+        } else {
+            Write-Console "    TOFU mode: no pinned SHA256 for $Description — add the observed hash above to the pin constant to harden." "WARN"
+        }
+        # Execute the bootstrap script in-process (same effect as IEX but via file)
+        if ($ArgsList -and $ArgsList.Count -gt 0) {
+            & $tmp @ArgsList
+        } else {
+            & $tmp
+        }
+    } finally {
+        if (Test-Path $tmp) { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# Pinned hashes for supply-chain verification. Captured 2026-04-22 overnight
+# (Claude Opus 4.7 session): download + Get-FileHash -Algorithm SHA256 of both
+# endpoints. Upstream may rotate these scripts — when hash-mismatch fires on a
+# future run, operator should:
+#   1. Inspect the diff (compare pinned vs observed hash; check commit log at
+#      github.com/chocolatey/choco or github.com/ScoopInstaller/Install)
+#   2. If the change is legitimate (trusted release), update the constant below
+#   3. If unexpected, abort — potential DNS hijack / CDN compromise
+# Leave empty string to drop back to TOFU mode (hash logs, install proceeds with warning).
+$CHOCO_INSTALL_SHA256 = '44E045ED5350758616D664C5AF631E7F2CD10165F5BF2BD82CBF3A0BB8F63462'  # 2026-04-22, 36218 bytes
+$SCOOP_INSTALL_SHA256 = '48F6EA398B3A3FA26FAE0093D37BD85B13E7EAA5D1D4A3E208408768408E35AE'  # 2026-04-22, 26292 bytes
+
 if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
     Write-Console "Installing Chocolatey..." "INFO"
-    [System.Net.ServicePointManager]::SecurityProtocol =
-        [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-    Invoke-Expression ((New-Object System.Net.WebClient).DownloadString(
-        'https://community.chocolatey.org/install.ps1'))
+    Install-BootstrapScript `
+        -Url 'https://community.chocolatey.org/install.ps1' `
+        -ExpectedSha256 $CHOCO_INSTALL_SHA256 `
+        -Description 'Chocolatey installer'
     Write-Console "Chocolatey installed." "OK"
 } else {
     choco upgrade chocolatey -y --no-progress 2>&1 | Out-Null
@@ -446,13 +533,17 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
 }
 if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
     Write-Console "Installing Scoop (user-space, -RunAsAdmin for system shims)..." "INFO"
-    Invoke-Expression "& {$(irm get.scoop.sh)} -RunAsAdmin"
+    Install-BootstrapScript `
+        -Url 'https://get.scoop.sh' `
+        -ExpectedSha256 $SCOOP_INSTALL_SHA256 `
+        -Description 'Scoop installer' `
+        -ArgsList @('-RunAsAdmin')
 } else { Write-Console "Scoop present." "OK" }
 # FIX-58: PS7 — installs for subsequent restores; zero-state bootstrap must be manual.
 # On zero-state: winget install Microsoft.PowerShell from PS5.1 terminal, then re-run this script in pwsh.
 Invoke-Package "winget" "Microsoft.PowerShell"       # pwsh 7 — bootstraps future re-runs
 # Languages — version-controlled, explicit versioning
-# FIX-48/81: Python via winget (Python.Python.3.14) — PSF official. CLAY_PC runs 3.14; 3.13 uninstalled.
+# FIX-48/81: Python via winget (Python.Python.3.14) — PSF official. <HOST> runs 3.14; 3.13 uninstalled.
 Invoke-Package "winget" "Python.Python.3.14"
 Invoke-Package "winget" "Rustlang.Rustup"            # winget path avoids Scoop shim bug (v4 FIX)
 Invoke-Package "choco"  "git"
@@ -861,10 +952,24 @@ Write-Console "Installing Cargo tools (requires Rustup from Batch 1 + new termin
 $cargoTools = @("mise")
 foreach ($pkg in $cargoTools) { Invoke-Package "cargo" $pkg }
 # FIX-63: Configure mise activation in PowerShell profile (persistent across sessions)
-$miseActivationLine = "`nmise activate pwsh | Out-String | Invoke-Expression"
+# H-10 fix 2026-04-21: backup $PROFILE before any append. Without backup, a partial
+# Add-Content (missing newline interaction with prior profile state) breaks the
+# profile and every future pwsh session fails to load — hard to diagnose because
+# the error appears on every launch. Prepend explicit `r`n to the activation line
+# so it never concatenates onto a prior unterminated line.
+$miseActivationLine = "`r`nmise activate pwsh | Out-String | Invoke-Expression`r`n"
 if (Test-Path $PROFILE) {
     $profileContent = Get-Content $PROFILE -Raw -ErrorAction SilentlyContinue
     if ($profileContent -notmatch "mise activate") {
+        $profileBackup = "$PROFILE.bak_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        try {
+            Copy-Item -Path $PROFILE -Destination $profileBackup -Force -ErrorAction Stop
+            Write-Console "Profile backup: $profileBackup" "OK"
+        } catch {
+            Write-Console "Profile backup FAILED ($_) — aborting append to avoid breaking pwsh launch" "ERROR"
+            $state.Failed.Add("config:mise-activate-profile-backup-failed")
+            return
+        }
         Add-Content -Path $PROFILE -Value $miseActivationLine
         Write-Console "mise activation added to profile: $PROFILE" "OK"
         $state.Success.Add("config:mise-activate-profile")

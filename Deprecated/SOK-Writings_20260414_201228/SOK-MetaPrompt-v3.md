@@ -14,7 +14,7 @@ This block is the technical-domain variant of the S. CLAY Personal OS fixed chas
 | Field | Value |
 |-------|-------|
 | Operator | S. Clay Caddell — engineer, soldier, autodidact, homesteader |
-| System | CLAY_PC: Dell Inspiron 16 Plus 7630, i7-13700H (6P+8E cores), 32GB RAM, Win 11 Education |
+| System | <HOST>: Dell Inspiron 16 Plus 7630, i7-13700H (6P+8E cores), 32GB RAM, Win 11 Education |
 | Storage Architecture | C: NVMe 1TB (primary), E: USB SSD 500GB (offload/backup), G: Google Drive FAT32 (cloud sync), D: 4TB HDD (currently unreadable, TestDisk recovery in progress) |
 | Automation Suite | SOK (Son of Klem) — 23 PowerShell 7.6 scripts + 1 module, governing system maintenance, process optimisation, storage management, backup, and recovery |
 | GitHub | barelyaninconvenience |

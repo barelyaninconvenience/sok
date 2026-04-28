@@ -140,7 +140,7 @@ param(
     [string]$OldSnapshot,
     [string]$NewSnapshot,
     [double]$AutoApproveThreshold = 16.66,
-    [string]$ComparatorOutputDir  = "$env:USERPROFILE\Documents\SOK\Archives",
+    [string]$ComparatorOutputDir  = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Archives",
 
     # PAST: Restructure params
     [string[]]$RestructureTargets = @(
@@ -890,12 +890,23 @@ if ($CompareSnapshots) {
         function Get-ArchiveIndex {
             param([string]$Path)
             $index = @{}; $currentFile = $null; $startLine = 0; $lineNum = 0
+            # H-2 fix 2026-04-21: prior `$lineNum - 1` was inconsistent with
+            # SOK-Comparator.ps1 Build-FileIndex (uses -5) and factually wrong for
+            # Archiver's 5-line per-file header block (blank + dashes + FILE: +
+            # SIZE: + dashes — see SOK-Archiver.ps1 lines 188-191). Using -1
+            # under-accounted by 4 lines, leaking 4 separator lines into the
+            # previous file's range. Unified to the Comparator's ArchiveHeaderOffset.
+            $ArchiveHeaderOffset = 5
             $reader = [System.IO.StreamReader]::new($Path)
             try {
                 while (($line = $reader.ReadLine()) -ne $null) {
                     $lineNum++
                     if ($line -match '^# FILE: (.+)$') {
-                        if ($currentFile) { $index[$currentFile] = @{ Start = $startLine; End = $lineNum - 1 } }
+                        if ($currentFile) {
+                            $endLine = $lineNum - $ArchiveHeaderOffset
+                            if ($endLine -lt $startLine) { $endLine = $startLine }
+                            $index[$currentFile] = @{ Start = $startLine; End = $endLine }
+                        }
                         $currentFile = $Matches[1].Trim(); $startLine = $lineNum
                     }
                 }
@@ -969,8 +980,9 @@ if ($CompareSnapshots) {
             $v = 1
             while (Test-Path $diffPath) { $diffPath = "$ComparatorOutputDir\SOK_Diff_$(Get-Date -Format 'yyyyMMdd_HHmmss')_v$v.txt"; $v++ }
 
+            # M-6 (Cluster C) consistency 2026-04-22: 1MB → 128KB buffer (matches SOK-Comparator fix)
             $utf8   = [System.Text.Encoding]::UTF8
-            $stream = [System.IO.FileStream]::new($diffPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 1048576)
+            $stream = [System.IO.FileStream]::new($diffPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 131072)
             $writer = [System.IO.StreamWriter]::new($stream, $utf8)
             try {
                 $writer.WriteLine("# SOK DIFFERENTIAL REPORT")
@@ -1146,7 +1158,7 @@ if ($OptimizeDefender) {
 
         $exclusions = @(
             "$env:USERPROFILE\Documents\Journal\Projects",
-            "$env:USERPROFILE\Documents\SOK",
+            "$env:USERPROFILE\Documents\Journal\Projects\SOK",
             "$env:USERPROFILE\.cargo",
             "$env:USERPROFILE\.npm",
             "$env:USERPROFILE\.pyenv",
@@ -1193,24 +1205,41 @@ if ($OptimizeProcesses) {
 
     $selfPid   = $PID
     $parentPid = (Get-CimInstance Win32_Process -Filter "ProcessId=$PID").ParentProcessId
-    $protected = @($config.ProtectedProcesses)
+
+    # v1.1.1 backport from SOK-ProcessOptimizer (C-1 / C-2 fix 2026-04-21):
+    #   - Read namespaced $config.ProcessOptimizer.ProtectedProcesses (was $config.ProtectedProcesses → empty)
+    #   - Case-normalized to lowercase for consistent matching
+    #   - Read $config.ProcessOptimizer.BloatProcesses (was completely ignored → user bloat list silently inert)
+    $protected = @($config.ProcessOptimizer.ProtectedProcesses) |
+        Where-Object { $_ } |
+        ForEach-Object { $_.ToString().ToLower() }
+    if ($null -eq $protected) { $protected = @() }
+    $bloat = @($config.ProcessOptimizer.BloatProcesses) |
+        Where-Object { $_ } |
+        ForEach-Object { $_.ToString().ToLower() }
+    if ($null -eq $bloat) { $bloat = @() }
 
     function Get-ProcessCategory {
         param([System.Diagnostics.Process]$Proc)
         if ($Proc.Id -eq $selfPid -or $Proc.Id -eq $parentPid) { return 'SelfProtected' }
-        if ($protected -contains $Proc.ProcessName) { return 'ConfigProtected' }
         $name = $Proc.ProcessName.ToLower()
+        if ($protected -contains $name) { return 'ConfigProtected' }
+        # v1.1.1 backport: BloatProcess check moved BEFORE heuristics so config beats DevTool/Shell/etc
+        if ($bloat -contains $name) { return 'BloatProcess' }
         $path = try { $Proc.MainModule.FileName } catch { '' }
 
         if ($name -in @('system','registry','smss','csrss','wininit','services','lsass','dwm','winlogon','fontdrvhost','logonui','idle')) { return 'WindowsCore' }
         if ($name -eq 'svchost') { return 'WindowsService' }
-        if ($name -in @('msmapeng','nissrv','securityhealthservice') -or
-            ($Proc.Company -match 'Microsoft') -and $name -match 'defender|security|protect') { return 'Security' }
+        if ($name -in @('msmpeng','nissrv','securityhealthservice') -or
+            (($Proc.Company -match 'Microsoft') -and $name -match 'defender|security|protect')) { return 'Security' }
         if ($name -match '^(audiodg|wavessys|wavessvc|rtkaudioservice)' -or
             $Proc.Company -match 'Realtek|NVIDIA Audio|Waves Audio') { return 'AudioVideo' }
         if ($name -in @('explorer','sihost','shellexperiencehost','startmenuexperiencehost','runtimebroker','textinputhost','searchhost')) { return 'Shell' }
+        # v1.1.1 backport: anchored exact-match regex; removed cmd|conhost|node|terminal|cursor (Electron node.exe
+        # / shell-out cmd were immortalizing every consumer app); added claude|windowsterminal; $hasWindow gate
+        # removed so headless pwsh automation is protected.
+        if ($name -match '^(code|pwsh|powershell|windowsterminal|claude|idea|pycharm|rider|datagrip|postman|dbeaver)$') { return 'DevTool' }
         $hasWindow = ($Proc.MainWindowHandle -ne [System.IntPtr]::Zero)
-        if ($hasWindow -and $name -match 'code|pwsh|powershell|terminal|cmd|conhost|idea|pycharm|rider|datagrip|postman|dbeaver|cursor') { return 'DevTool' }
         if ($name -match 'telemetry|diagtrack|census|compattelrunner|diagscap') { return 'Telemetry' }
         if ($name -match 'update' -and $Proc.Company -notmatch 'Microsoft') { return 'Updater' }
         if ($name -match 'crash|reporter|werfault|wermgr') { return 'CrashReporter' }
@@ -1222,10 +1251,12 @@ if ($OptimizeProcesses) {
         return 'Uncategorized'
     }
 
+    # v1.1.0 backport: BloatProcess added to Balanced and Aggressive — catches configured consumer apps that
+    # used to land in Uncategorized regardless of window state.
     $killTiers = @{
         Conservative = @('Telemetry', 'Updater', 'CrashReporter')
-        Balanced     = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync', 'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground')
-        Aggressive   = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync', 'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground', 'UserProcess')
+        Balanced     = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync', 'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground', 'BloatProcess')
+        Aggressive   = @('Telemetry', 'Updater', 'CrashReporter', 'CloudSync', 'AppDataBackground', 'AppDataRoaming', 'HighCPUBackground', 'BloatProcess', 'UserProcess')
     }
     $killCategories = $killTiers[$ProcessMode]
 
@@ -1237,7 +1268,8 @@ if ($OptimizeProcesses) {
         $cat = Get-ProcessCategory $proc
         if (-not $categoryStats.ContainsKey($cat)) { $categoryStats[$cat] = 0 }
         $categoryStats[$cat]++
-        if ($cat -in $killCategories -and $protected -notcontains $proc.ProcessName) { $killList.Add($proc) }
+        # v1.1.1 backport: case-normalized $protected check
+        if ($cat -in $killCategories -and $protected -notcontains $proc.ProcessName.ToLower()) { $killList.Add($proc) }
     }
 
     Write-SOKLog "Process categories: $(($categoryStats.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ' | ')" -Level Ignore
@@ -1526,9 +1558,13 @@ if ($Clean) {
     if ($DryRun) { Write-SOKLog '*** DRY RUN ***' -Level Warn }
 
     $candidateKills  = @('chrome', 'msedge', 'Claude', 'Slack', 'Discord', 'GitKraken', 'Cypress', 'Insomnia', 'AcroCEF', 'Acrobat')
-    $processesToKill = $candidateKills | Where-Object { $_ -notin @($config.ProtectedProcesses) }
+    # C-1 fix 2026-04-21: namespaced $config.ProcessOptimizer.ProtectedProcesses + case-normalized comparison
+    $cfgProtected = @($config.ProcessOptimizer.ProtectedProcesses) |
+        Where-Object { $_ } |
+        ForEach-Object { $_.ToString().ToLower() }
+    $processesToKill = $candidateKills | Where-Object { $_.ToLower() -notin $cfgProtected }
     if ($candidateKills.Count -ne $processesToKill.Count) {
-        $skippedProcs = $candidateKills | Where-Object { $_ -in @($config.ProtectedProcesses) }
+        $skippedProcs = $candidateKills | Where-Object { $_.ToLower() -in $cfgProtected }
         Write-SOKLog "  Protected processes excluded: $($skippedProcs -join ', ')" -Level Warn
     }
     foreach ($proc in $processesToKill) {
@@ -1730,8 +1766,9 @@ if ($LiveScan) {
         $enumOpts.RecurseSubdirectories = $true; $enumOpts.IgnoreInaccessible = $true
         $enumOpts.AttributesToSkip = [System.IO.FileAttributes]::ReparsePoint
 
+        # M-6 (Cluster C) consistency 2026-04-22: 1MB → 128KB
         $utf8      = [System.Text.Encoding]::UTF8
-        $stream    = [System.IO.FileStream]::new($outJson, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 1048576)
+        $stream    = [System.IO.FileStream]::new($outJson, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 131072)
         $writer    = [System.IO.StreamWriter]::new($stream, $utf8)
         $errStream = [System.IO.StreamWriter]::new($errLog, $false, $utf8)
         $count     = 0; $errCount = 0; $scanStart = Get-Date
@@ -1969,7 +2006,26 @@ if ($Offload) {
             $roboExit   = $LASTEXITCODE
 
             if ($roboExit -lt 8) {
-                if (Test-Path $resolvedSrc) { Remove-Item $resolvedSrc -Recurse -Force -ErrorAction SilentlyContinue }
+                # C-5 fix 2026-04-21: replaced SilentlyContinue with try/Stop/catch +
+                # explicit gate before mklink. Without the gate, a silently-failed
+                # Remove-Item leaves source partially populated; mklink then fails
+                # silently against the existing path and the operator never sees the
+                # half-moved state. With the gate, partial /MOVE now logs explicit
+                # data-preserved-in-both-places diagnostic.
+                if (Test-Path $resolvedSrc) {
+                    try {
+                        Remove-Item $resolvedSrc -Recurse -Force -ErrorAction Stop
+                    } catch {
+                        Write-SOKLog "  Source removal failed: $($_.Exception.Message) — junction skipped; data preserved at source $resolvedSrc AND dest $destPath" -Level Error
+                        $failed++
+                        continue
+                    }
+                }
+                if (Test-Path $resolvedSrc) {
+                    Write-SOKLog "  Source still exists after removal — junction skipped (locked files remain at $resolvedSrc; data also at $destPath)" -Level Warn
+                    $failed++
+                    continue
+                }
                 $junctionResult = cmd /c "mklink /J `"$resolvedSrc`" `"$destPath`"" 2>&1
                 if ($LASTEXITCODE -eq 0) {
                     $jxnAttr   = [System.IO.File]::GetAttributes($resolvedSrc) -band [System.IO.FileAttributes]::ReparsePoint
@@ -2110,8 +2166,9 @@ if ($Archive) {
         $manifest | Select-Object -First 20 | ForEach-Object { Write-SOKLog "  $($_.FullName)" -Level Ignore }
         if ($manifest.Count -gt 20) { Write-SOKLog "  ... and $($manifest.Count - 20) more" -Level Ignore }
     } else {
+        # M-6 (Cluster C) consistency 2026-04-22: 1MB → 128KB
         $utf8   = [System.Text.Encoding]::UTF8
-        $stream = [System.IO.FileStream]::new($targetFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 1048576)
+        $stream = [System.IO.FileStream]::new($targetFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 131072)
         $writer = [System.IO.StreamWriter]::new($stream, $utf8)
         try {
             $writer.WriteLine("# ══════════════════════════════════════════════════════════════════════")

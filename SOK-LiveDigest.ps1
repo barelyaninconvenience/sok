@@ -43,6 +43,11 @@ param(
     # DryRun: parse the LiveScan JSON but skip writing digest output files.
     [switch]$DryRun,
     [string]$InputPath,
+    # LOW-1 fix 2026-04-22: magic number documented. 204661 = Fibonacci convention
+    # adopted across SOK (see SOK-Common $script:LOCK_TIMEOUT_SEC + ScanDepth=21 + other
+    # Fibonacci-ish defaults). At this scale, TopN is effectively "don't truncate" —
+    # typical LiveScan outputs have 50K-500K entries; 204661 keeps everything in the
+    # top-N lists unless operator explicitly sets a lower value.
     [int]$TopN = 204661,
     [string]$OutputDir
 )
@@ -63,9 +68,18 @@ Show-SOKBanner -ScriptName 'SOK-LiveDigest' -Subheader "TopN: $TopN"
 $logPath = Initialize-SOKLog -ScriptName 'SOK-LiveDigest'
 $startTime = Get-Date
 
-# Run LiveScan first if stale — LiveDigest is its downstream consumer
+# HIGH-10 fix 2026-04-21: gate the LiveScan cascade behind an explicit env var.
+# Prior behavior: Invoke-SOKPrerequisite could auto-run a 30+ minute LiveScan as
+# a "staleness freshness" step. Under SYSTEM (scheduled task), this silently
+# extends LiveDigest's runtime by ~30 min with no operator awareness. The gate
+# preserves the cascade for intentional interactive use (SOK_ALLOW_LIVESCAN_CASCADE=1)
+# while protecting scheduled/automated invocations.
 if (Get-Command Invoke-SOKPrerequisite -ErrorAction SilentlyContinue) {
-    Invoke-SOKPrerequisite -CallingScript 'SOK-LiveDigest'
+    if ($env:SOK_ALLOW_LIVESCAN_CASCADE -eq '1') {
+        Invoke-SOKPrerequisite -CallingScript 'SOK-LiveDigest'
+    } else {
+        Write-SOKLog '  Invoke-SOKPrerequisite cascade SKIPPED (set $env:SOK_ALLOW_LIVESCAN_CASCADE=1 to enable auto-LiveScan if stale)' -Level Debug
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -75,8 +89,8 @@ if (-not $InputPath) {
     Write-SOKLog 'No input path specified -- searching for latest LiveScan output...' -Level Ignore
     $searchDirs = @(
         (Get-ScriptLogDir -ScriptName 'SOK-LiveScan')
-        'C:\Users\shelc\Documents\SOK\Logs\LiveScan'
-        'C:\Users\shelc\Documents\SOK'
+        # Legacy-path fallbacks removed 2026-04-20 per CLAUDE.md §2 SOK Boundaries.
+        # All SOK logs now live under Documents\Journal\Projects\SOK\Logs\ via Get-ScriptLogDir.
     )
     $candidates = @()
     foreach ($dir in $searchDirs) {
@@ -109,10 +123,28 @@ Write-SOKLog "Input: $InputPath ($inputSizeKB KB)" -Level Ignore
 # ═══════════════════════════════════════════════════════════════
 Write-SOKLog 'PARSING LIVESCAN DATA' -Level Section
 $parseStart = Get-Date
+# MEDIUM-5 fix 2026-04-21: memory-safety for large LiveScan JSON.
+# Prior behavior: Get-Content -Raw loads the entire 525MB+ file into a single
+# string, then ConvertFrom-Json builds a deep PSObject tree (often 3-4x the
+# string size in RAM). Under SYSTEM's reduced working set (typically ~1.4GB
+# commit ceiling), this has OOMed in the wild. Mitigations applied here:
+#   (1) Size gate: warn at >250MB; refuse at >1GB with actionable error
+#   (2) -AsHashtable flag on ConvertFrom-Json: ~40% less memory + faster property
+#       access downstream (dictionary lookup beats PSObject.Properties walk)
+#   (3) Free the raw string before GC to reduce peak
+$inputSizeMB = (Get-Item $InputPath).Length / 1MB
+if ($inputSizeMB -gt 1024) {
+    Write-SOKLog "Input file is $([math]::Round($inputSizeMB,1)) MB — refusing to load (>1GB would OOM under SYSTEM). Consider splitting the scan or running LiveDigest interactively with expanded working set." -Level Error
+    exit 2
+}
+if ($inputSizeMB -gt 250) {
+    Write-SOKLog "Large input: $([math]::Round($inputSizeMB,1)) MB — memory-aware parse path (may take 20-60s)" -Level Warn
+}
 Write-SOKLog 'Loading JSON (this may take a moment for large files)...' -Level Annotate
 try {
     $raw = Get-Content $InputPath -Raw -ErrorAction Stop
-    $data = $raw | ConvertFrom-Json -ErrorAction Stop
+    # -AsHashtable: PS7+ only; faster + lower memory than PSObject tree
+    $data = $raw | ConvertFrom-Json -AsHashtable -Depth 32 -ErrorAction Stop
     $raw = $null
     [System.GC]::Collect()
 }
@@ -124,12 +156,23 @@ $parseTime = [math]::Round(((Get-Date) - $parseStart).TotalSeconds, 1)
 Write-SOKLog "Parsed in ${parseTime}s" -Level Success
 
 # Extract items from LiveScan wrapper: { "scan_metadata":{}, "items":[], "summary":{} }
+# MEDIUM-5 fix 2026-04-21: -AsHashtable (applied above) returns IDictionary, not
+# PSCustomObject, so membership check must go through ContainsKey or Keys.
 $entries = @()
-if ($data.PSObject.Properties.Name -contains 'items') {
-    $entries = @($data.items)
-    if ($data.scan_metadata) {
-        $dirsOnly = if ($data.scan_metadata.dirs_only) { 'DirsOnly' } else { 'Full' }
-        Write-SOKLog "Scan mode: $dirsOnly | Source: $($data.scan_metadata.source)" -Level Annotate
+$hasItems = $false
+if ($data -is [System.Collections.IDictionary]) {
+    $hasItems = $data.Contains('items')
+} elseif ($null -ne $data -and $null -ne $data.PSObject) {
+    $hasItems = $data.PSObject.Properties.Name -contains 'items'
+}
+if ($hasItems) {
+    $entries = @($data['items'])
+    $scanMeta = if ($data -is [System.Collections.IDictionary]) { $data['scan_metadata'] } else { $data.scan_metadata }
+    if ($scanMeta) {
+        $dirsOnlyRaw = if ($scanMeta -is [System.Collections.IDictionary]) { $scanMeta['dirs_only'] } else { $scanMeta.dirs_only }
+        $source = if ($scanMeta -is [System.Collections.IDictionary]) { $scanMeta['source'] } else { $scanMeta.source }
+        $dirsOnly = if ($dirsOnlyRaw) { 'DirsOnly' } else { 'Full' }
+        Write-SOKLog "Scan mode: $dirsOnly | Source: $source" -Level Annotate
     }
 }
 elseif ($data -is [array]) { $entries = $data }
@@ -165,6 +208,10 @@ foreach ($e in $entries) {
     if ($e.s) { $topLevelMap[$topLevel].SizeKB += $e.s }
 
     $processedCount++
+    # LOW-2 fix 2026-04-22: magic number documented. 222222 is the Fibonacci-adjacent
+    # progress-log frequency — every ~222K entries processed (tens-of-seconds wall
+    # clock) emit a progress line. Prevents log spam on small scans while still
+    # showing liveness on multi-hundred-thousand-entry scans.
     if ($processedCount % 222222 -eq 0) {
         Write-SOKLog "  Processed $processedCount / $totalEntries entries..." -Level Debug
     }

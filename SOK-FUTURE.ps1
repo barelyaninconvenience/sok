@@ -152,7 +152,13 @@ $config  = Get-SOKConfig
 $anyOptIn = $Offload.IsPresent -or $Backup.IsPresent -or $Archive.IsPresent
 
 if ($All) {
-    $Offload = $Backup = $Archive = $true
+    # Cluster-A MEDIUM fix 2026-04-21: honor -Skip* inside -All. Prior semantics
+    # made `-All -SkipBackup` run Backup anyway (silent override). Now: -All
+    # activates all three; -Skip* explicitly deactivates; -Skip* wins over -All
+    # so the operator's negative assertion is respected.
+    $Offload = -not $SkipOffload
+    $Backup  = -not $SkipBackup
+    $Archive = -not $SkipArchive
 } elseif (-not $anyOptIn) {
     if (-not $SkipOffload)  { $Offload  = $true }
     if (-not $SkipBackup)   { $Backup   = $true }
@@ -239,7 +245,11 @@ if ($Offload) {
     if (-not $DryRun -and -not (Test-Path $offloadRoot)) { New-Item -Path $offloadRoot -ItemType Directory -Force | Out-Null }
 
     # ── Safety regex — never move these ─────────────────────────────────────
-    $rxNeverMove = [regex]::new('(?ix)^[A-Z]:\\Windows|^[A-Z]:\\Recovery|\\(System32|SysWOW64|WinSxS|pagefile|hiberfil)([\\]|$)|^[A-Z]:\\Users$|\.git\\objects', [System.Text.RegularExpressions.RegexOptions]::Compiled)
+    # Cluster-A MEDIUM fix 2026-04-21: added ProgramData\Microsoft\(WindowsDefender|Windows)
+    # to the deny-list for defense-in-depth. These paths can grow large (Defender
+    # definitions, Windows Update cache) and would be catastrophic to offload.
+    # Also added ProgramData\chocolatey\lib which holds installed package payloads.
+    $rxNeverMove = [regex]::new('(?ix)^[A-Z]:\\Windows|^[A-Z]:\\Recovery|\\(System32|SysWOW64|WinSxS|pagefile|hiberfil)([\\]|$)|^[A-Z]:\\Users$|\.git\\objects|^[A-Z]:\\ProgramData\\Microsoft\\(WindowsDefender|Windows)([\\]|$)|^[A-Z]:\\ProgramData\\chocolatey\\lib', [System.Text.RegularExpressions.RegexOptions]::Compiled)
 
     # ── 23-target offload list — 7-tier priority ─────────────────────────────
     # Each entry: Source path, DepGroup (for display), Priority (1=highest)
@@ -315,9 +325,15 @@ if ($Offload) {
     $runningFreeBytes = $extDisk.FreeSpace
 
     foreach ($target in ($offloadTargets | Sort-Object Priority)) {
-        # Resolve wildcard paths (Insomnia uses versioned folder names)
+        # Resolve wildcard paths (Insomnia uses versioned folder names).
+        # Cluster-A MEDIUM fix 2026-04-21: when multiple versions exist, Select-Object
+        # -First 1 takes one arbitrary match silently. Log the other candidates so the
+        # operator knows which versions are NOT being offloaded (they remain at source).
         $resolvedSrc = if ($target.Source -match '\*') {
-            $candidates = @(Get-Item $target.Source -ErrorAction SilentlyContinue | Select-Object -First 1)
+            $candidates = @(Get-Item $target.Source -ErrorAction SilentlyContinue)
+            if ($candidates.Count -gt 1) {
+                Write-SOKLog "  Wildcard '$($target.Source)' matched $($candidates.Count) paths — offloading ONLY: $($candidates[0].FullName). Others remain at source: $(($candidates | Select-Object -Skip 1 | ForEach-Object FullName) -join '; ')" -Level Warn
+            }
             if ($candidates) { $candidates[0].FullName } else { $null }
         } else { $target.Source }
 
@@ -375,9 +391,35 @@ if ($Offload) {
         $roboOutput = & robocopy @roboArgs 2>&1
         $roboExit   = $LASTEXITCODE
 
+        # Cluster-A HIGH fix 2026-04-21: surface robocopy diagnostic on warning/error
+        # exit (>=4). Without this, operator only sees "robocopy exit 8" and the root
+        # cause (access-denied, locked file, path-too-long, etc.) is invisible.
+        if ($roboExit -ge 4) {
+            Write-SOKLog "  robocopy output (exit=$roboExit):`n$($roboOutput | Out-String)" -Level Warn
+        }
+
         if ($roboExit -lt 8) {
             # Robocopy succeeded — source is now empty, safe to remove and junction
-            if (Test-Path $resolvedSrc) { Remove-Item $resolvedSrc -Recurse -Force -ErrorAction SilentlyContinue }
+            # C-5 fix 2026-04-21 (Cluster A miss): same lethal Remove-before-mklink
+            # pattern as was fixed in SOK-Cleanup / SOK-Offload / SOK-METICUL.OS.
+            # Silently-failed removal + subsequent mklink against a still-populated
+            # source would leave partial data at the source PLUS at the dest, with
+            # no junction bridging them. Now uses try/Stop/catch + explicit gate to
+            # surface partial-/MOVE state to the operator.
+            if (Test-Path $resolvedSrc) {
+                try {
+                    Remove-Item $resolvedSrc -Recurse -Force -ErrorAction Stop
+                } catch {
+                    Write-SOKLog "  Source removal failed: $($_.Exception.Message) — junction skipped; data preserved at source $resolvedSrc AND dest $destPath" -Level Error
+                    $failed++
+                    continue
+                }
+            }
+            if (Test-Path $resolvedSrc) {
+                Write-SOKLog "  Source still exists after removal — junction skipped (locked files remain at $resolvedSrc; data also at $destPath)" -Level Warn
+                $failed++
+                continue
+            }
             $junctionResult = cmd /c "mklink /J `"$resolvedSrc`" `"$destPath`"" 2>&1
             if ($LASTEXITCODE -eq 0) {
                 # Post-offload junction verification: confirm the junction resolves correctly.
@@ -435,12 +477,22 @@ if ($Backup) {
     Write-SOKLog "Sources: $($BackupSources.Count) | Dest: $BackupDest | Threads: $Threads" -Level Ignore
     if ($DryRun) { Write-SOKLog '*** DRY RUN — robocopy /L mode (list only) ***' -Level Warn }
 
-    # Validate backup destination drive has space
-    $destDrive = ($BackupDest -split ':')[0] + ':'
+    # Validate backup destination drive has space.
+    # Cluster-A MEDIUM fix 2026-04-21: GetPathRoot handles UNC, drive-rooted, and
+    # relative paths uniformly — the prior `-split ':'` parse broke for anything
+    # other than drive-letter paths.
+    $destDrive = [System.IO.Path]::GetPathRoot($BackupDest).TrimEnd('\')
     $destDisk  = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$destDrive'" -ErrorAction SilentlyContinue
     if ($destDisk) {
         $destFreeKB = [math]::Round($destDisk.FreeSpace / 1KB, 0)
         Write-SOKLog "Destination drive ${destDrive}: $destFreeKB KB free" -Level $(if ($destFreeKB -lt 10485760) {'Warn'} else {'Ignore'})
+        # Cluster-A MEDIUM fix 2026-04-21: pre-flight abort at <10GB free.
+        # Contrast: Offload aborts at MaxDriveUtilPct 96%. Backup previously only warned
+        # then attempted robocopy, which would partial-fail with cryptic exit codes.
+        if ($destFreeKB -lt 10485760 -and -not $DryRun) {
+            Write-SOKLog "ABORT: destination has <10 GB free ($destFreeKB KB). Prune or expand before backup. Use -DryRun to preview." -Level Error
+            return
+        }
     }
 
     if (-not $DryRun -and -not (Test-Path $BackupDest)) {
@@ -448,6 +500,15 @@ if ($Backup) {
     }
 
     $totalCopied = 0; $totalFailed = 0; $allVerified = $true
+
+    # Cluster-A HIGH fix 2026-04-21: -Incremental implies /MIR which is destructive at
+    # destination. Header says "NEVER in scheduled/unattended runs" but that was
+    # enforcement-by-discipline. Now enforcement-by-refusal in non-interactive context
+    # so a typo in a future scheduled task cannot silently wipe $BackupDest.
+    if ($Incremental -and -not [Environment]::UserInteractive) {
+        Write-SOKLog "ABORT: -Incremental (/MIR) refused in non-interactive context. /MIR deletes files in destination that are absent from source; must be operator-confirmed. Use /E for additive backup or re-invoke interactively." -Level Error
+        return
+    }
     $roboFlag    = if ($Incremental) { '/MIR' } else { '/E' }
 
     foreach ($src in $BackupSources) {
@@ -468,6 +529,10 @@ if ($Backup) {
             '/NP', '/ETA', '/BYTES',
             "/LOG+:$logFile"
         )
+        # Cluster-A MEDIUM fix 2026-04-21: /TEE for interactive runs so operator sees
+        # progress in-console in addition to log file. Non-interactive runs stay
+        # quiet since the log captures everything.
+        if ([Environment]::UserInteractive) { $roboArgs += '/TEE' }
         if ($DryRun) { $roboArgs += '/L' }
 
         $roboOutput = & robocopy @roboArgs 2>&1
@@ -477,6 +542,13 @@ if ($Backup) {
         # 8=failures, 16=fatal. < 4 is clean; < 8 is warning; >= 8 is error.
         $level = if ($roboExit -lt 4) { 'Success' } elseif ($roboExit -lt 8) { 'Warn' } else { 'Error' }
         Write-SOKLog "  robocopy exit $roboExit ($srcName) — $logFile" -Level $level
+
+        # Cluster-A HIGH fix 2026-04-21: surface robocopy diagnostic on warning/error
+        # exit (>=4). The log file above captures full detail, but the operator-facing
+        # log gets only the exit code. Include captured output for immediate visibility.
+        if ($roboExit -ge 4) {
+            Write-SOKLog "  robocopy output (exit=$roboExit):`n$($roboOutput | Out-String)" -Level Warn
+        }
 
         if ($roboExit -ge 8) { $totalFailed++; $allVerified = $false; continue }
 
@@ -547,7 +619,14 @@ if ($Archive) {
 
     # Auto-increment version number
     $version = 1
-    while (Test-Path "$ArchiveOutputDir\${ArchiveBaseName}_v$version.txt") { $version++ }
+    # Cluster-A MEDIUM fix 2026-04-21: upper bound on version counter to prevent
+    # pathological infinite loop if filesystem/permissions misbehave.
+    while (Test-Path "$ArchiveOutputDir\${ArchiveBaseName}_v$version.txt") {
+        $version++
+        if ($version -gt 10000) {
+            throw "Archive version ceiling exceeded (>10000 versions in $ArchiveOutputDir). Prune old archives before continuing."
+        }
+    }
     $targetFile = "$ArchiveOutputDir\${ArchiveBaseName}_v$version.txt"
     Write-SOKLog "Archive version: v$version -> $targetFile" -Level Ignore
 
@@ -560,8 +639,13 @@ if ($Archive) {
         if (-not (Test-Path $folder)) { Write-SOKLog "  SKIP (not found): $folder" -Level Warn; continue }
         $files = Get-ChildItem $folder -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object {
+                # Cluster-A MEDIUM fix 2026-04-21: tight archive-output pattern.
+                # Prior regex `[regex]::Escape($ArchiveBaseName)` matched ANY file
+                # containing the base-name substring (e.g., a doc named
+                # "SOK_Archive_README.md" got excluded from its own archive). Now:
+                # exact match against the archive-file naming pattern only.
                 $extRegex.IsMatch($_.Extension) -and
-                $_.Name -notmatch [regex]::Escape($ArchiveBaseName)  # Exclude prior archives
+                $_.Name -notmatch "^$([regex]::Escape($ArchiveBaseName))_v\d+\.txt$"
             }
         foreach ($f in $files) { $manifest.Add($f); $totalSize += $f.Length }
     }
@@ -574,9 +658,12 @@ if ($Archive) {
         $manifest | Select-Object -First 20 | ForEach-Object { Write-SOKLog "  $($_.FullName)" -Level Ignore }
         if ($manifest.Count -gt 20) { Write-SOKLog "  ... and $($manifest.Count - 20) more" -Level Ignore }
     } else {
-        # Stream the archive with 1MB buffer
+        # Stream the archive with 128KB buffer (M-6 consistency 2026-04-22:
+        # was 1MB; reduced to 131072 bytes to stay polite with SYSTEM-context
+        # working-set limits. 128KB is still well-above streaming efficiency
+        # threshold for modern disks.)
         $utf8   = [System.Text.Encoding]::UTF8
-        $stream = [System.IO.FileStream]::new($targetFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 1048576)
+        $stream = [System.IO.FileStream]::new($targetFile, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 131072)
         $writer = [System.IO.StreamWriter]::new($stream, $utf8)
         try {
             # Archive header

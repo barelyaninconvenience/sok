@@ -1,0 +1,20 @@
+[project]
+name = "exa-mcp-bridge"
+version = "1.0.0"
+description = "stdio-to-HTTP MCP bridge that proxies Claude Code MCP requests to Exa's HTTP MCP endpoint with DPAPI-read Bearer token auth"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "httpx>=0.27.0",
+    "anyio>=4.0.0",
+]
+
+[project.scripts]
+exa-mcp-bridge = "exa_mcp_bridge.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["exa_mcp_bridge"]

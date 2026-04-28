@@ -3,7 +3,7 @@
 
 <#
 .SYNOPSIS
-    SOK-PAST-BlankSlate — Historical State Audit and Reconciliation Tool for CLAY_PC
+    SOK-PAST-BlankSlate — Historical State Audit and Reconciliation Tool for <HOST>
 
 .DESCRIPTION
     Answers the question: "What is the accumulated historical state of this system,
@@ -47,7 +47,10 @@
     Audit and diff against the October 2025 reference snapshot.
 #>
 
-[CmdletBinding(SupportsShouldProcess)]
+# Cluster-A LOW fix 2026-04-21: removed SupportsShouldProcess — it's declared but
+# never wired via $PSCmdlet.ShouldProcess() calls, making -WhatIf / -Confirm misleading.
+# $DryRun is the actual gate for destructive ops throughout this script.
+[CmdletBinding()]
 param(
     [switch]$DryRun,
     [switch]$SnapshotOnly,
@@ -82,6 +85,9 @@ $PRIMARY_DRIVE             = 'C:'
 $STORAGE_DEBT_THRESHOLD_GB = 0.5        # files >= this size in "cold" paths are debt
 
 # Paths considered cold/offloadable on C:
+# Cluster-A MEDIUM fix 2026-04-21: $env:TEMP expands to the same path as
+# 'C:\Users\shelc\AppData\Local\Temp' on a default user profile — scanned twice.
+# Select-Object -Unique de-dupes after env-expansion.
 $COLD_PATH_PATTERNS = @(
     'C:\Users\shelc\Downloads',
     'C:\Users\shelc\Videos',
@@ -89,7 +95,7 @@ $COLD_PATH_PATTERNS = @(
     'C:\Users\shelc\Documents\Journal\Projects\SOK\Archives',
     'C:\Users\shelc\AppData\Local\Temp',
     "$env:TEMP"
-)
+) | Select-Object -Unique
 
 # Paths excluded from deep scans (noise sources)
 $SCAN_EXCLUSIONS = @(
@@ -116,8 +122,17 @@ function Write-SOKLog {
         default { 'Cyan'    }
     }
     Write-Host "[$ts][$Level][$Component] $Message" -ForegroundColor $color
+    # Cluster-A MEDIUM fix 2026-04-21: if log-file write fails (dir deleted mid-run,
+    # disk full, lock contention), surface a warning and disable further log writes
+    # rather than silently dropping all subsequent log entries under
+    # $ErrorActionPreference='Continue'. Operator knows file logging is degraded.
     if ($script:LogFilePath -and (Test-Path (Split-Path $script:LogFilePath))) {
-        "[$ts][$Level][$Component] $Message" | Out-File -FilePath $script:LogFilePath -Append -Encoding utf8
+        try {
+            "[$ts][$Level][$Component] $Message" | Out-File -FilePath $script:LogFilePath -Append -Encoding utf8 -ErrorAction Stop
+        } catch {
+            Write-Warning "Log file write failed at '$script:LogFilePath': $_. Further file logging disabled; console output continues."
+            $script:LogFilePath = $null
+        }
     }
 }
 
@@ -336,8 +351,15 @@ function Invoke-EnvironmentProbe {
     }
 
     # PATH integrity check — find entries that do not exist
-    $pathEntries = $env:PATH -split ';' | Where-Object { $_ -ne '' }
-    $brokenPaths = $pathEntries | Where-Object { -not (Test-Path $_) } | ForEach-Object {
+    # Cluster-A MEDIUM fix 2026-04-21: PATH may contain quoted entries with embedded
+    # semicolons (rare but valid). Strip surrounding quotes after split; suppress
+    # permission-denied Test-Path errors that are unrelated to existence.
+    $pathEntries = $env:PATH -split ';' |
+        ForEach-Object { $_.Trim().Trim('"') } |
+        Where-Object { $_ -ne '' }
+    $brokenPaths = $pathEntries | Where-Object {
+        -not (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue)
+    } | ForEach-Object {
         [ordered]@{ Type = 'BrokenPATH'; Value = $_ }
     }
     $probe.Broken += $brokenPaths
@@ -433,7 +455,17 @@ function Invoke-InstalledStateSnapshot {
     try {
         $wgOut = & winget list --accept-source-agreements 2>&1
         if ($LASTEXITCODE -eq 0) {
-            $lines = $wgOut | Select-Object -Skip 3 | Where-Object { $_ -match '\S' }
+            # Cluster-A LOW fix 2026-04-21: winget header count varies by version
+            # (2-4 lines depending on progress-bar suppression). Skip until the
+            # column-separator row (dashes) instead of assuming exactly 3 header lines.
+            $allLines = @($wgOut)
+            $dashIdx = ($allLines | Select-String -Pattern '^-{3,}').LineNumber | Select-Object -First 1
+            $lines = if ($dashIdx) {
+                $allLines[$dashIdx..($allLines.Count - 1)] | Where-Object { $_ -match '\S' }
+            } else {
+                # Fallback: original skip-3 if no dash row found
+                $allLines | Select-Object -Skip 3 | Where-Object { $_ -match '\S' }
+            }
             $snapshot.WingetPackages = $lines | ForEach-Object {
                 $parts = $_ -split '\s{2,}'
                 if ($parts.Count -ge 2) {
@@ -453,9 +485,11 @@ function Invoke-InstalledStateSnapshot {
     try {
         if (Get-Command scoop -ErrorAction SilentlyContinue) {
             $scoopOut = & scoop list 2>&1
+            # Cluster-A LOW fix 2026-04-21: tolerate scoop names with embedded spaces
+            # (rare but legal) by splitting only on 2+ whitespace instead of \s+.
             $snapshot.ScoopPackages = ($scoopOut | Select-Object -Skip 1 | Where-Object { $_ -match '^\s+\S' }) |
                 ForEach-Object {
-                    $parts = $_.Trim() -split '\s+'
+                    $parts = $_.Trim() -split '\s{2,}'
                     [ordered]@{ Name = $parts[0]; Version = if ($parts.Count -gt 1) { $parts[1] } else { '' } }
                 }
         }
@@ -603,7 +637,11 @@ function Invoke-StorageTopologyMap {
 
     foreach ($root in $Roots) {
         try {
-            Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+            # Cluster-A MEDIUM fix 2026-04-21: -Force includes hidden/system dirs
+            # per feedback_hidden_dirs.md. Test-PathExcluded already filters the
+            # problematic system dirs (System Volume Information, $Recycle.Bin);
+            # without -Force, hidden course/config/AppData dirs were missed entirely.
+            Get-ChildItem -Path $root -Recurse -File -Force -ErrorAction SilentlyContinue |
                 Where-Object {
                     $_.Length -ge $thresholdBytes -and
                     -not (Test-PathExcluded $_.FullName)
@@ -1226,13 +1264,18 @@ function Invoke-SelectiveRepair {
             if (-not $DryRun) {
                 $newPath = ($validEntries -join ';')
                 try {
-                    Set-ItemProperty -Path $userPathKey -Name 'Path' -Value $newPath
+                    # Cluster-A MEDIUM fix 2026-04-21: use [Environment]::SetEnvironmentVariable
+                    # instead of Set-ItemProperty on HKCU:\Environment. The former correctly
+                    # broadcasts WM_SETTINGCHANGE so running apps pick up the new PATH; the
+                    # latter updates registry silently, leaving open shells/apps on the old PATH
+                    # until logoff.
+                    [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
                     $repairLog.Repairs += [ordered]@{
                         Action  = 'PrunedBrokenPATH'
                         Removed = $brokenEntries
                         NewPath = $newPath
                     }
-                    Write-SOKLog "User PATH pruned. Removed $($brokenEntries.Count) broken entries." 'INFO' 'Repair'
+                    Write-SOKLog "User PATH pruned (WM_SETTINGCHANGE broadcast). Removed $($brokenEntries.Count) broken entries." 'INFO' 'Repair'
                 } catch {
                     Write-SOKLog "Failed to update PATH: $_" 'ERROR' 'Repair'
                 }
@@ -1255,9 +1298,18 @@ function Invoke-SelectiveRepair {
 
             if ($tempSize -gt 500MB) {
                 if (-not $DryRun) {
+                    # Cluster-A HIGH fix 2026-04-21: TEMP cleanup previously deleted
+                    # every file under $env:TEMP unconditionally, crashing any running
+                    # app (Chrome, Outlook, VSCode, Claude Code itself) whose live
+                    # session files were in TEMP. Now: 7-day age filter — only files
+                    # not written in the last week are cleaned. Running-app session
+                    # files have recent LastWriteTime so are preserved.
+                    $cleanupAgeDays = 7
+                    $ageCutoff = (Get-Date).AddDays(-$cleanupAgeDays)
                     $removed = 0
                     $errors  = 0
                     Get-ChildItem -Path $tempPath -Recurse -File -ErrorAction SilentlyContinue |
+                        Where-Object { $_.LastWriteTime -lt $ageCutoff } |
                         ForEach-Object {
                             try { Remove-Item $_.FullName -Force -ErrorAction Stop; $removed++ }
                             catch { $errors++ }
@@ -1322,9 +1374,27 @@ function Invoke-SelectiveRepair {
     }
 
     # 5. Attempt to restart stuck services
+    # Cluster-A HIGH fix 2026-04-21: blocklist of services whose forced restart
+    # destabilizes the system. Audio stack, Defender, network stack, DHCP/DNS
+    # are frequently in "pending" states during legitimate OS transitions —
+    # forcing them to restart in those windows breaks dependent services. Only
+    # restart if NOT in this blocklist.
+    $serviceRestartBlocklist = @(
+        'audiodg', 'Audiosrv',
+        'MsMpEng', 'NisSrv', 'SecurityHealthService', 'WinDefend', 'wscsvc',
+        'dhcp', 'Dnscache',
+        'BFE', 'mpssvc', 'lmhosts',
+        'LSM', 'CryptSvc', 'TrustedInstaller',
+        'TermService', 'UmRdpService'
+    )
     $stuckSvcs = $EnvProbe.Broken | Where-Object { $_.Type -eq 'StuckService' }
     foreach ($svc in $stuckSvcs) {
         Write-SOKLog "Stuck service found: $($svc.Name) ($($svc.Status))" 'WARN' 'Repair'
+        if ($serviceRestartBlocklist -contains $svc.Name) {
+            Write-SOKLog "  Service '$($svc.Name)' on restart-blocklist — SKIPPED (system-critical; pending state may be legitimate transition)" 'WARN' 'Repair'
+            $repairLog.Skipped += [ordered]@{ Action = 'RestartStuckService'; Reason = 'Blocklisted'; Name = $svc.Name }
+            continue
+        }
         if (-not $DryRun) {
             try {
                 Restart-Service -Name $svc.Name -Force -ErrorAction Stop

@@ -40,7 +40,7 @@ param(
     [string]$OldSnapshot,
     [string]$NewSnapshot,
 
-    [string]$OutputDir = "$env:USERPROFILE\Documents\SOK\Logs\Archives",
+    [string]$OutputDir = "$env:USERPROFILE\Documents\Journal\Projects\SOK\Logs\Archives",
 
     [double]$AutoApproveThreshold = 16.66
 )
@@ -96,6 +96,14 @@ function Get-ArchiveMap {
     $currentFile = $null
     $lineNumber = 0
 
+    # H-2 fix 2026-04-21: named constant for the Archiver header-block offset.
+    # Archiver emits per-file header as 5 lines: blank line + `# ---` + `# FILE:`
+    # + `# SIZE:` + `# ---` (see SOK-Archiver.ps1 lines 188-191). When the next
+    # file's header starts at line N, the previous file's content ends at N-5.
+    # Constant name matches the matching constant in SOK-METICUL.OS.ps1
+    # Get-ArchiveIndex so refactors land in both copies together.
+    $ArchiveHeaderOffset = 5
+
     Write-Progress -Activity "Indexing" -Status "Mapping: $(Split-Path $Path -Leaf)"
 
     $reader = $null
@@ -104,7 +112,12 @@ function Get-ArchiveMap {
         while (($line = $reader.ReadLine()) -ne $null) {
             $lineNumber++
             if ($line -match $HeaderRegex) {
-                if ($currentFile) { $map[$currentFile].End = $lineNumber - 5 }
+                if ($currentFile) {
+                    $endLine = $lineNumber - $ArchiveHeaderOffset
+                    # Clamp: if End < Start (very small previous file), use Start
+                    if ($endLine -lt $map[$currentFile].Start) { $endLine = $map[$currentFile].Start }
+                    $map[$currentFile].End = $endLine
+                }
                 $currentFile = $matches['Path'].Trim()
                 $map[$currentFile] = @{ Start = $lineNumber + 2; End = 0 }
             }
@@ -213,6 +226,14 @@ if ($percentDiff -ge 100) {
 if ($percentDiff -gt $AutoApproveThreshold) {
     Write-SOKLog "Volatility ($percentDiff%) exceeds auto-approve threshold ($AutoApproveThreshold%)." -Level Warn
     if (-not $DryRun) {
+        # C-L-5 fix 2026-04-21: Read-Host blocks forever when stdin is redirected
+        # (SOK-TestBatch pipeline, scheduled-task execution). Detect non-interactive
+        # context and abort safely instead of hanging. Operator can override via
+        # -AutoApproveThreshold 100 to bypass the prompt entirely.
+        if ([Console]::IsInputRedirected) {
+            Write-SOKLog 'Non-interactive context detected (stdin redirected) — aborting to avoid hang. Re-run interactively or raise -AutoApproveThreshold.' -Level Error
+            exit 1
+        }
         $conf = Read-Host "Generate report anyway? (y/n)"
         if ($conf -ne 'y') { exit }
     }
@@ -242,7 +263,11 @@ while (Test-Path "$OutputDir\SOK_Diff_${oldName}_${newName}_V${repV}.txt") { $re
 $ReportPath = "$OutputDir\SOK_Diff_${oldName}_${newName}_V${repV}.txt"
 
 $utf8 = [System.Text.Encoding]::UTF8
-$stream = [System.IO.FileStream]::new($ReportPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 1048576)
+# M-6 (Cluster C) fix 2026-04-22: 1MB buffer was fine for large archives but
+# caused gratuitous memory spikes on small diff outputs. 128KB is more than
+# enough for typical text streaming while staying polite with working-set
+# pressure on SYSTEM-context runs.
+$stream = [System.IO.FileStream]::new($ReportPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read, 131072)
 $writer = [System.IO.StreamWriter]::new($stream, $utf8)
 
 try {

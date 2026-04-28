@@ -143,20 +143,34 @@ Remove-EmptyDir -Path (Join-Path $ScriptsRoot 'Redundancy') -Label 'scripts\Redu
 # ═══════════════════════════════════════════════════════════════
 # ITEM 3: scripts\ duplicate BareMetal versions
 # Keep SOK-BareMetal.ps1 (canonical). Deprecate versioned copies.
+#
+# M-13 fix 2026-04-21: SOK-BareMetal_v5.3.ps1 IS the current canonical
+# (project_sok.md memory line 22 — never demoted to non-versioned name).
+# Removed v5.3 from $bmVersions; added pre-check that aborts ITEM 3 entirely
+# if no non-versioned canonical exists, surfacing the design mismatch
+# instead of silently destroying the only canonical.
 # ═══════════════════════════════════════════════════════════════
 Write-SOKLog 'ITEM 3: scripts\ duplicate BareMetal versions' -Level Section
 
-$bmVersions = @(
-    'SOK-BareMetal_v5.1_Final.ps1'
-    'SOK-BareMetal_v5.2.ps1'
-    'SOK-BareMetal_v5.3.ps1'
-    'SOK-BareMetal_v5_QA.ps1'
-)
-foreach ($bm in $bmVersions) {
-    $src  = Join-Path $ScriptsRoot $bm
-    $name = [System.IO.Path]::GetFileNameWithoutExtension($bm)
-    $dst  = Join-Path $ScriptsRoot "Deprecated\${name}_$ts.ps1"
-    Move-ToTarget -Source $src -Dest $dst -Label "Deprecated BareMetal: $bm"
+$canonicalBareMetal = Join-Path $ScriptsRoot 'SOK-BareMetal.ps1'
+if (-not (Test-Path $canonicalBareMetal)) {
+    Write-SOKLog "  ABORT ITEM 3: no non-versioned SOK-BareMetal.ps1 exists at $canonicalBareMetal." -Level Warn
+    Write-SOKLog "    The current canonical is SOK-BareMetal_v5.3.ps1 (per project_sok.md memory)." -Level Warn
+    Write-SOKLog "    Refusing to deprecate any versioned BareMetal — would destroy the only working canonical." -Level Warn
+    Write-SOKLog "    Resolution: either rename v5.3 → SOK-BareMetal.ps1 first, OR explicitly opt-in via -ForceDeprecateVersionedBareMetal." -Level Warn
+    $script:skipped += 4
+} else {
+    $bmVersions = @(
+        'SOK-BareMetal_v5.1_Final.ps1'
+        'SOK-BareMetal_v5.2.ps1'
+        'SOK-BareMetal_v5_QA.ps1'
+    )
+    foreach ($bm in $bmVersions) {
+        $src  = Join-Path $ScriptsRoot $bm
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($bm)
+        $dst  = Join-Path $ScriptsRoot "Deprecated\${name}_$ts.ps1"
+        Move-ToTarget -Source $src -Dest $dst -Label "Deprecated BareMetal: $bm"
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════
