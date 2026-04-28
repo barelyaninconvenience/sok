@@ -19,7 +19,7 @@
       CPU:  Intel i7-13700H (14 cores / 20 threads) — Raptor Lake, solid for local ML
       RAM:  32 GB DDR5
       NVMe: Samsung PM9B1 1 TB (C: OS drive, D: not mapped)
-      USB-SSD: JMicron PCIe581 ~500 GB (E: Backup1)
+      USB-SSD: ~500 GB external SSD (E: Backup1)
       USB-HDD: JMicron SATA581 ~3.6 TB (not mapped as a letter in scan)
       VFS:  Google Drive mounted as G: (FAT32 virtual, ~999 GB apparent)
     DISK DELTA (27 Mar → 28 Mar):
@@ -859,7 +859,7 @@ Write-Log "Log: $logFile" "INFO"
       CPU:  Intel i7-13700H (14 cores / 20 threads) — Raptor Lake, solid for local ML
       RAM:  32 GB DDR5
       NVMe: Samsung PM9B1 1 TB (C: OS drive, D: not mapped)
-      USB-SSD: JMicron PCIe581 ~500 GB (E: Backup1)
+      USB-SSD: ~500 GB external SSD (E: Backup1)
       USB-HDD: JMicron SATA581 ~3.6 TB (not mapped as a letter in scan)
       VFS:  Google Drive mounted as G: (FAT32 virtual, ~999 GB apparent)
     DISK DELTA (27 Mar → 28 Mar):
@@ -1703,7 +1703,7 @@ All `Install-ChocoPackage` calls are idempotent — already-installed packages a
 | **CPU** | Intel i7-13700H — 14 cores / 20 threads (Raptor Lake) |
 | **RAM** | 32 GB DDR5 |
 | **C: NVMe** | Samsung PM9B1 1 TB (OS drive) |
-| **E: USB-SSD** | JMicron PCIe581 ~500 GB (`Backup1`, SOK offload target) |
+| **<BACKUP_DRIVE>** | ~500 GB external SSD (`Backup1`, SOK offload target) |
 | **HDD** | JMicron SATA581 ~3.6 TB (unmounted — action required) |
 | **G: Virtual** | Google Drive FAT32 VFS, ~999 GB apparent |
 | **DoD PKI** | InstallRoot 5.6, Cisco AnyConnect VPN, Smart Card service |

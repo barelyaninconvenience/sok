@@ -6,7 +6,7 @@
 .SYNOPSIS
     SOK-BareMetal v5.3 FINAL — Exhaustive Bare-Metal Restoration
     Host: <HOST> | User: <USER> | Zero-State Assumption
-    D: unmounted | E: USB-SSD (SOK target) | G: Google Drive VFS
+    <DRIVE-TOPOLOGY>
 .DESCRIPTION
     Complete reconstruction of the operator environment from a zero-state machine.
     Purges hostile/conflicting applications. Installs 220+ tools across Choco,
