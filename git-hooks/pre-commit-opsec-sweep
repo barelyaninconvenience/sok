@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Pre-commit OPSEC Sweep Hook
+# Implements the 15-category Public Artifact Discipline check
+# (per memory/feedback_public_artifact_discipline.md as of 2026-04-28).
+#
+# Behavior: greps staged content for known leakage patterns; blocks
+# commit if any pattern is found; allows override via --no-verify.
+#
+# Install: copy or symlink to .git/hooks/pre-commit in each public-eligible repo
+# Make executable: chmod +x .git/hooks/pre-commit
+#
+# Override: `git commit --no-verify` (use sparingly + intentionally)
+#
+# Standard exit codes: 0 = clean, 1 = leakage detected (commit blocked)
+
+# Note: NO `set -e` — interacts badly with grep-pipeline non-matches and
+# silently aborts hook output. Explicit error handling below where needed.
+
+# Get the staged diff (only files being committed)
+# Exclude meta-files that legitimately define the patterns themselves
+# (chicken-and-egg: the hooks + the audit script + the discipline-definition
+#  memory all CONTAIN the leakage patterns as pattern definitions)
+STAGED=$(git diff --cached --name-only --diff-filter=ACM \
+    | grep -vE '(git-hooks/(pre-commit|commit-msg)-opsec-sweep|git-hooks/install-pre-commit-hooks|SOK-OPSECQuarterlyAudit\.ps1|feedback_public_artifact_discipline\.md|HII_OPSEC_Master_Remediation_Runbook|Substrate_Thesis_Launch_Readiness|Resume_Public_Sanitized|HII_LinkedIn_Connect_Messages_PerPerson|HII_Alternatives_Second_Tier_Map|Operating_Stack_v1_20260418\.md|State_Snapshot_Current\.md|Master_Log_20260424\.md|Abstract_Oversight)' || true)
+
+if [ -z "$STAGED" ]; then
+    exit 0  # nothing staged, nothing to check
+fi
+
+LEAKED=0
+HITS=""
+
+# Helper: scan staged-content for a pattern; record hits without modifying files
+scan_pattern() {
+    local pattern="$1"
+    local label="$2"
+    local severity="$3"  # HIGH | MEDIUM | LOW
+
+    # Use git diff --cached to look at *staged content* (not working tree)
+    # Strip leading +/- markers; only check ADDED lines (new content being introduced)
+    local matches
+    matches=$(git diff --cached -U0 -- $STAGED 2>/dev/null \
+        | grep '^+' | grep -v '^+++' \
+        | grep -nE "$pattern" 2>/dev/null || true)
+
+    if [ -n "$matches" ]; then
+        LEAKED=1
+        HITS="${HITS}
+[$severity] $label
+$(echo "$matches" | head -3)
+$(test $(echo "$matches" | wc -l) -gt 3 && echo "  ... ($(echo "$matches" | wc -l) total matches; showing first 3)")
+"
+    fi
+}
+
+# === Category 1-2: Personal context + operational details ===
+scan_pattern '\bClay\b.*\b(my|me|I built|I scoped|I went|I learned)' "Cat 1: First-person Clay-named context" "MEDIUM"
+scan_pattern '(M[0-9]{8}|UC student ID)' "Cat 2: Student ID pattern" "HIGH"
+
+# === Category 4: Specific named personnel (HII panel + others) ===
+scan_pattern '\b(DeGraff|Madison Zamzow|Joe Rawlings|Renee Neidigh|Sam.*HII)\b' "Cat 4: HII panel personnel name" "HIGH"
+scan_pattern '\b(Akwei|Menard|Cohen)\b.*\b(team|teammate|coordinated)' "Cat 4: Teammate name without consent" "HIGH"
+scan_pattern '\bDr\.\s*Li\b.*\b(course|grade|standing)' "Cat 4: Instructor name with academic context" "HIGH"
+
+# === Category 5: Internal queue/backlog vocabulary ===
+scan_pattern '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Re-Informed Action Queue|Operating Stack v[0-9])' "Cat 5: Internal vocabulary" "HIGH"
+scan_pattern '\bFIFO Priority Model\b' "Cat 5: Internal vocabulary (FIFO Priority Model)" "MEDIUM"
+scan_pattern '\b(Tier-1|Tier-2|Tier-3) (forcing-function|FIFO|backburner)' "Cat 5: Internal vocabulary (Tier categorization)" "MEDIUM"
+scan_pattern '\bClay-pen\b|\bClay-decision\b|\bClay-judgment\b' "Cat 5: Internal vocabulary (Clay-pen pattern)" "HIGH"
+
+# === Category 6: Memory-system citations ===
+scan_pattern '~/\.claude/CLAUDE\.md' "Cat 6: ~/.claude/CLAUDE.md private path" "HIGH"
+scan_pattern 'Writings/[A-Z][a-zA-Z_0-9]+\.md' "Cat 6: Writings/ private path" "HIGH"
+scan_pattern 'State_Snapshot_(Current|[0-9])' "Cat 6: State_Snapshot reference" "MEDIUM"
+scan_pattern 'Master_Log_[0-9]{8}' "Cat 6: Master_Log dated reference" "MEDIUM"
+scan_pattern 'Abstract_Oversight_[0-9]{8}' "Cat 6: Abstract_Oversight reference" "MEDIUM"
+scan_pattern 'memory/(MEMORY\.md|feedback_|protocol_|user_|project_)' "Cat 6: memory/ directory reference" "HIGH"
+scan_pattern 'ML/Session_[0-9]{8}' "Cat 6: ML/Session log reference" "MEDIUM"
+
+# === Category 9: HII / interview / employer-target leakage ===
+scan_pattern '\b(HII Mission Tech|HII Mission Technologies)' "Cat 9: HII Mission Tech reference" "HIGH"
+scan_pattern '\bSCIF[ -]round\b' "Cat 9: SCIF-round reference" "HIGH"
+scan_pattern '\b(ATSP5|SHIELD contract)' "Cat 9: HII contract reference" "HIGH"
+scan_pattern '\bWright-Patt(erson)?( AFB)?\b' "Cat 9: Wright-Patt geographic anchor (verify needed before stripping)" "MEDIUM"
+
+# === Category 10: Overemployment / concurrent-employment vocabulary ===
+scan_pattern '\boveremployment\b' "Cat 10: Overemployment vocabulary" "HIGH"
+scan_pattern '\bDetection Risk (multiplier|score)' "Cat 10: Detection Risk metric" "HIGH"
+scan_pattern '\bSync Oversight\b' "Cat 10: Sync Oversight metric" "HIGH"
+scan_pattern '1099-stack' "Cat 10: 1099-stacking reference" "HIGH"
+
+# === Category 11: Spouse / family employer chain ===
+scan_pattern '\bJasmine\b.*\b(Honeywell|Emerson|GE Aero|ICS|OT engineer)' "Cat 11: Spouse employer chain" "HIGH"
+
+# === Category 12: Service-attack-surface enumeration ===
+scan_pattern '<HOST>.*runs.*(PostgreSQL|MongoDB|Neo4j|MySQL|Redis|InfluxDB)' "Cat 12: Database-services enumeration" "HIGH"
+
+# === Category 13: Hardware fingerprint ===
+scan_pattern 'JMicron PCIe[0-9]+' "Cat 13: Specific SSD controller" "HIGH"
+scan_pattern 'Intel(64)? Family [0-9]+ Model [0-9]+ Stepping [0-9]+' "Cat 13: CPUID granular fingerprint" "HIGH"
+scan_pattern '\bi7-13700H\b' "Cat 13: Specific CPU model (Clay's machine)" "MEDIUM"
+
+# === Category 14: Drive-topology narration ===
+scan_pattern 'D: unmounted \| E: USB-SSD' "Cat 14: Drive-topology pattern" "HIGH"
+scan_pattern '\*\*E: USB-SSD\*\*' "Cat 14: USB-SSD drive role narration" "MEDIUM"
+
+# === Personal email plaintext ===
+scan_pattern '\bshelcaddell@(gmail\.com|mail\.uc\.edu)' "Cat 4/5: Personal email plaintext" "HIGH"
+scan_pattern '\bcaddelsc@mail\.uc\.edu' "Cat 4: UC institutional email plaintext" "HIGH"
+scan_pattern '\bcaddellhomestead@gmail\.com' "Cat 4: Anthropic-account email plaintext" "HIGH"
+scan_pattern '\bshalala773@(gmail|yahoo)\.com' "Cat 4: Backup gmail plaintext" "HIGH"
+
+# === CLAY_PC machine name ===
+scan_pattern '\bCLAY_PC\b' "Cat 12: CLAY_PC machine name" "HIGH"
+scan_pattern '\bUser: shelc\b' "Cat 12: User: shelc fingerprint" "HIGH"
+scan_pattern 'shelc@<HOST>|sccaddell@ClayPC' "Cat 12: User@host fingerprint" "HIGH"
+
+# === TS/SCI + polygraph specifics in non-resume contexts ===
+scan_pattern 'Polygraph.*(Full Scope|Counterintelligence) \([0-9]{4}\)' "Cat 2: Polygraph type+date specificity" "HIGH"
+scan_pattern '\$30M\+? in classified' "Cat 10: SCIF asset quantification" "HIGH"
+scan_pattern '\bSpecial Access Programs?\b' "Cat 9: SAP language" "HIGH"
+
+# === Phone number patterns ===
+scan_pattern '\(513\) 293-1215' "Cat 4: Personal phone number" "HIGH"
+scan_pattern '513\.293\.1215|5132931215' "Cat 4: Personal phone number (alt format)" "HIGH"
+
+# === Output ===
+if [ "$LEAKED" = "1" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  PRE-COMMIT OPSEC SWEEP — LEAKAGE DETECTED"
+    echo "============================================================"
+    echo ""
+    echo "Staged content matches one or more Public Artifact Discipline"
+    echo "leakage patterns (per memory/feedback_public_artifact_discipline.md)."
+    echo ""
+    echo "Findings:"
+    echo "$HITS"
+    echo ""
+    echo "============================================================"
+    echo "  Commit BLOCKED. Three options:"
+    echo "  1. Fix the leakage and re-stage (recommended)"
+    echo "  2. Override: 'git commit --no-verify' (use intentionally)"
+    echo "  3. If false-positive, file an issue or amend the hook"
+    echo "============================================================"
+    exit 1
+fi
+
+# Clean — let the commit through
+exit 0

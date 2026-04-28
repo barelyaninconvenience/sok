@@ -308,7 +308,7 @@ if (Test-Path $brokenJunction) {
         Write-Log "BROKEN JUNCTION: $brokenJunction -> target unknown" "ERROR"
         Write-Log "  UC OneDrive is not connected. This junction points nowhere." "WARNING"
         Write-Log "  To remove (safe - does NOT delete any data): cmd /c rmdir `"$brokenJunction`"" "INFO"
-        Write-Log "  To reconnect UC OneDrive: sign in via OneDrive settings with shelcaddell@mail.uc.edu" "INFO"
+        Write-Log "  To reconnect UC OneDrive: sign in via OneDrive settings with your UC email" "INFO"
         # Offer to remove it automatically
         $response = Read-Host "Remove broken UC OneDrive junction now? (y/N)"
         if ($response -eq 'y') {
@@ -1251,7 +1251,7 @@ if (Test-Path $brokenJunction) {
         Write-Log "BROKEN JUNCTION: $brokenJunction -> target unknown" "ERROR"
         Write-Log "  UC OneDrive is not connected. This junction points nowhere." "WARNING"
         Write-Log "  To remove (safe - does NOT delete any data): cmd /c rmdir `"$brokenJunction`"" "INFO"
-        Write-Log "  To reconnect UC OneDrive: sign in via OneDrive settings with shelcaddell@mail.uc.edu" "INFO"
+        Write-Log "  To reconnect UC OneDrive: sign in via OneDrive settings with your UC email" "INFO"
         # Offer to remove it automatically
         $response = Read-Host "Remove broken UC OneDrive junction now? (y/N)"
         if ($response -eq 'y') {

@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Commit-Msg OPSEC Sweep Hook
+# Companion to pre-commit-opsec-sweep — pre-commit can't see the commit message,
+# so this hook scans the message text for the same Public Artifact Discipline
+# leakage patterns (per memory/feedback_public_artifact_discipline.md).
+#
+# Triggered: AFTER message is written, BEFORE commit lands.
+# Receives: $1 = path to file containing the commit message.
+#
+# Origin: matlab-radar-adaptive-waveform pushed two commits (1318e7d + 7b2659f)
+# whose MESSAGES contained "HII Mission SCIF round May 6-8" and "SCIF-round
+# 5-minute walkthrough." File-level sanitization didn't catch those because
+# pre-commit hooks don't see the message. This hook closes that gap.
+#
+# Override: `git commit --no-verify` (skips ALL hooks, both pre-commit + commit-msg)
+#
+# Exit codes: 0 = clean, 1 = leakage detected
+
+MSG_FILE="$1"
+
+if [ -z "$MSG_FILE" ] || [ ! -f "$MSG_FILE" ]; then
+    # Defensive — shouldn't happen in normal git flow
+    exit 0
+fi
+
+# Strip comment lines (git's commented-out instructions are not user content)
+MSG_CONTENT=$(grep -v '^#' "$MSG_FILE")
+
+if [ -z "$MSG_CONTENT" ]; then
+    exit 0  # empty message, will be rejected by git anyway
+fi
+
+LEAKED=0
+HITS=""
+
+scan_msg() {
+    local pattern="$1"
+    local label="$2"
+    local severity="$3"
+
+    if echo "$MSG_CONTENT" | grep -qE "$pattern" 2>/dev/null; then
+        local match_line
+        match_line=$(echo "$MSG_CONTENT" | grep -nE "$pattern" | head -1)
+        LEAKED=1
+        HITS="${HITS}
+[$severity] $label
+  $match_line
+"
+    fi
+}
+
+# Detect meta-commits (those that touch the discipline definition itself).
+# A commit message describing remediation legitimately mentions the patterns
+# being remediated. If ALL staged paths are meta-files, allow message-leakage.
+STAGED_PATHS=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null)
+META_ONLY=1
+if [ -z "$STAGED_PATHS" ]; then
+    META_ONLY=0
+fi
+while IFS= read -r p; do
+    if [ -z "$p" ]; then continue; fi
+    if ! echo "$p" | grep -qE '(git-hooks/|SOK-OPSECQuarterlyAudit|feedback_public_artifact_discipline|HII_OPSEC_Master_Remediation_Runbook|Substrate_Thesis_Launch_Readiness|Resume_Public_Sanitized|HII_LinkedIn_Connect_Messages|HII_Alternatives_Second_Tier_Map)'; then
+        META_ONLY=0
+        break
+    fi
+done <<< "$STAGED_PATHS"
+
+if [ "$META_ONLY" = "1" ]; then
+    # Meta-commit detected — message-pattern matches are expected; skip enforcement
+    exit 0
+fi
+
+# Same pattern set as pre-commit-opsec-sweep — applied to message text
+scan_msg '\b(HII Mission Tech|HII Mission Technologies)\b' "Cat 9: HII Mission Tech reference" "HIGH"
+scan_msg '\bSCIF[ -]round\b' "Cat 9: SCIF-round reference" "HIGH"
+scan_msg '\b(ATSP5|SHIELD contract)\b' "Cat 9: HII contract reference" "HIGH"
+scan_msg '\b(DeGraff|Madison Zamzow|Joe Rawlings|Renee Neidigh)\b' "Cat 4: HII panel personnel name" "HIGH"
+scan_msg '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Operating Stack v[0-9])' "Cat 5: Internal vocabulary" "HIGH"
+scan_msg '\bClay-pen\b|\bClay-decision\b|\bClay-judgment\b' "Cat 5: Clay-pen pattern" "HIGH"
+scan_msg '~/\.claude/CLAUDE\.md|memory/(MEMORY|feedback_|protocol_)' "Cat 6: Memory-system path" "HIGH"
+scan_msg 'Writings/[A-Z][a-zA-Z_0-9]+\.md' "Cat 6: Writings/ private path" "HIGH"
+scan_msg '\boveremployment\b|\bDetection Risk (multiplier|score)\b' "Cat 10: Overemployment vocabulary" "HIGH"
+scan_msg '\bJasmine\b.*\b(Honeywell|Emerson|GE Aero|ICS|OT engineer)' "Cat 11: Spouse employer chain" "HIGH"
+scan_msg 'JMicron PCIe[0-9]+|\bi7-13700H\b' "Cat 13: Hardware fingerprint" "HIGH"
+scan_msg '\bCLAY_PC\b|\bUser: shelc\b' "Cat 12: CLAY_PC / User:shelc fingerprint" "HIGH"
+scan_msg '\bshelcaddell@(gmail\.com|mail\.uc\.edu)|\bcaddelsc@mail\.uc\.edu' "Cat 4: Personal email plaintext" "HIGH"
+scan_msg 'Polygraph.*(Full Scope|Counterintelligence) \([0-9]{4}\)' "Cat 2: Polygraph specificity" "HIGH"
+
+if [ "$LEAKED" = "1" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  COMMIT-MSG OPSEC SWEEP — LEAKAGE DETECTED IN MESSAGE"
+    echo "============================================================"
+    echo ""
+    echo "Your commit message matches one or more leakage patterns."
+    echo ""
+    echo "Findings:"
+    echo "$HITS"
+    echo ""
+    echo "============================================================"
+    echo "  Commit BLOCKED. Edit the commit message:"
+    echo "  1. Re-run 'git commit' to open the editor"
+    echo "  2. Override (rare): 'git commit --no-verify'"
+    echo ""
+    echo "  Why this matters: matlab-radar-adaptive-waveform has two"
+    echo "  pushed commits (1318e7d, 7b2659f) whose messages contain HII"
+    echo "  references that file-level sanitization didn't catch. Once a"
+    echo "  message lands in pushed history, scrubbing requires force-push"
+    echo "  (CLAUDE.md \xC2\xA74). This hook prevents that class of failure."
+    echo "============================================================"
+    exit 1
+fi
+
+exit 0

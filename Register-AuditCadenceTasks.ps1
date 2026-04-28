@@ -15,12 +15,12 @@
       - SOK-Annual-Audit          : Jan 1 09:23          → SOK-AnnualAudit.ps1
       - SOK-Recursive-Reinvig     : Sunday 03:17         → SOK-RecursiveReinvigoration.ps1
 
-    Quarterly + Annual tasks still require Clay-pen execution during the triggered Claude session
+    Quarterly + Annual tasks still require manual execution during the triggered session
     (they require interpretive judgment that warrants attention). The scheduled task's role is to
-    write a dated notification into Writings/Scheduled_Audit_Inbox/ which Clay's next session
-    cold-start will surface.
+    write a dated notification into a per-user audit inbox which the next session's cold-start
+    will surface.
 
-    Recursive Reinvigoration (.claude/ sweep for insight-propagation) similarly writes a dated
+    Recursive Reinvigoration (insight-propagation sweep) similarly writes a dated
     notification for next-session pickup.
 
 .PARAMETER DryRun
