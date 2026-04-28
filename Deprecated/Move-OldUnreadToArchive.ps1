@@ -4,7 +4,7 @@
 # ==============================================================================
 
 # --- Configuration ---
-$userEmail = "shelcaddell@gmail.com" # REPLACE with your user principal name (UPN) / email
+$userEmail = "CHANGEME@example.com" # REPLACE with your user principal name (UPN) / email before running
 $dateLimit = "2026-01-01T00:00:00Z"  # UTC format required by Graph API
 
 # --- Connect to Microsoft Graph ---
