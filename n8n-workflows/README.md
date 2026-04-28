@@ -108,7 +108,7 @@ Per Operating Stack + KLEM/OS v3: n8n runs self-hosted on VPS (Hetzner / Digital
 
 ### 4. Role-scoped where applicable
 
-For overemployment scenarios: workflows that touch role-specific data (Job A calendar, Job B CRM) must use role-scoped credentials. Store per-role credentials in DPAPI via `Set-SOKSecret -Name '<ROLE>_<SECRET>'`.
+For multi-context-isolation scenarios: workflows that touch role-specific data must use role-scoped credentials. Store per-role credentials in DPAPI via `Set-SOKSecret -Name '<ROLE>_<SECRET>'`.
 
 ---
 

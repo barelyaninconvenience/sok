@@ -55,13 +55,9 @@ Plus helpers:
 - `Writings/KLEM_OS_Cost_and_Architecture_v3_20260421.md` Part F
 - `Writings/MCP_Config_Audit_20260421.md` — current config audit + deprecations
 
-### `role-scoped-deployments/` (v3.1 overemployment scaffolding)
+### `role-scoped-deployments/` (private; not tracked in this repo)
 
-Per-role Claude Code deployment scaffolding for multi-concurrent-remote-role operation.
-
-- **`start-role-session.ps1`** — launcher sets ROLE_CONTEXT + changes working dir + loads role-scoped MCP config
-- **`role-config.template.json`** — config template (customize to role-config.json)
-- **`README.md`** — deployment guide + column-A/B two-layer model
+Per-role deployment scaffolding for multi-context isolation. Maintained as a private local-only directory; not part of the published surface.
 
 **Companion references:**
 - `Writings/Overemployment_Stack_Integration_20260421.md`
@@ -128,7 +124,7 @@ The SOK PowerShell automation suite — infrastructure automation for Clay's wor
 
 - **2026-04-18**: Operating Stack v1 + SOK v1 structural completion
 - **2026-04-20**: Perpetual-mode cultivation + SOK remediation + KLEM/OS v1 unified + projects audit
-- **2026-04-21**: Custom MCP roster (6 MCPs) + role-scoped-deployments + public-apis-ingestion + n8n-workflows + overemployment v3.1/v3.2
+- **2026-04-21**: Custom MCP roster (6 MCPs) + public-apis-ingestion + n8n-workflows
 
 ---
 
