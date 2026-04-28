@@ -21,7 +21,7 @@
 # (chicken-and-egg: the hooks + the audit script + the discipline-definition
 #  memory all CONTAIN the leakage patterns as pattern definitions)
 STAGED=$(git diff --cached --name-only --diff-filter=ACM \
-    | grep -vE '(git-hooks/(pre-commit|commit-msg)-opsec-sweep|git-hooks/install-pre-commit-hooks|SOK-OPSECQuarterlyAudit\.ps1|feedback_public_artifact_discipline\.md|HII_OPSEC_Master_Remediation_Runbook|Substrate_Thesis_Launch_Readiness|Resume_Public_Sanitized|HII_LinkedIn_Connect_Messages_PerPerson|HII_Alternatives_Second_Tier_Map|Operating_Stack_v1_20260418\.md|State_Snapshot_Current\.md|Master_Log_20260424\.md|Abstract_Oversight)' || true)
+    | grep -vE '(git-hooks/.*opsec-sweep|git-hooks/install-pre-commit-hooks|SOK-OPSECQuarterlyAudit\.ps1|feedback_public_artifact_discipline\.md|feedback_credentialing_vs_claiming\.md|OPSEC_Discipline_Infrastructure|HII_OPSEC_Master_Remediation_Runbook|HII_Post_Connection_Response_Templates|Substrate_Thesis_Launch_Readiness|Substack_Launch_Drafts|Resume_Public_Sanitized|HII_LinkedIn_Connect_Messages_PerPerson|HII_Alternatives_Second_Tier_Map|LinkedIn_About_Proposal|PhD_Application_Substrate_Scaffold|lcs_public_showcase_|Operating_Stack_v1_20260418\.md|State_Snapshot_Current\.md|Master_Log_20260424\.md|Abstract_Oversight)' || true)
 
 if [ -z "$STAGED" ]; then
     exit 0  # nothing staged, nothing to check

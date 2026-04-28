@@ -9,6 +9,7 @@ set -e
 HOOK_DIR="C:/Users/shelc/Documents/Journal/Projects/scripts/git-hooks"
 HOOK_SOURCE="$HOOK_DIR/pre-commit-opsec-sweep"
 MSG_HOOK_SOURCE="$HOOK_DIR/commit-msg-opsec-sweep"
+PUSH_HOOK_SOURCE="$HOOK_DIR/pre-push-opsec-sweep"
 
 # Public-eligible repos to install the hook into
 REPOS=(
@@ -43,6 +44,11 @@ for repo in "${REPOS[@]}"; do
     cp "$MSG_HOOK_SOURCE" "$MSG_HOOK_DEST"
     chmod +x "$MSG_HOOK_DEST" 2>/dev/null || true
     echo "INSTALLED: $repo/.git/hooks/commit-msg"
+
+    PUSH_HOOK_DEST="$repo/.git/hooks/pre-push"
+    cp "$PUSH_HOOK_SOURCE" "$PUSH_HOOK_DEST"
+    chmod +x "$PUSH_HOOK_DEST" 2>/dev/null || true
+    echo "INSTALLED: $repo/.git/hooks/pre-push"
 
     INSTALLED=$((INSTALLED + 1))
 done

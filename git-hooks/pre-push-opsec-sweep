@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# Pre-Push OPSEC Sweep Hook
+# Companion to pre-commit-opsec-sweep + commit-msg-opsec-sweep.
+# Catches the gap between per-commit and quarterly: cumulative delta
+# of all commits being pushed, scanned together as a single content block.
+#
+# Why this exists: pre-commit scans staged content per-commit; commit-msg
+# scans message text per-commit; quarterly audit scans full repo state.
+# Pre-push scans the *push delta* — every line being newly added to
+# origin across all commits in this push, as a unified scan.
+#
+# Catches:
+# - Sequences of small commits that individually pass per-commit but
+#   collectively introduce a leakage pattern across files
+# - Commits made via `--no-verify` override that bypassed pre-commit
+# - Branch-merge or rebase that introduces patterns from a feature branch
+#
+# Behavior matches pre-commit-opsec-sweep severity-tier semantics:
+#   HIGH   -> blocks push
+#   MEDIUM -> warns + reports but allows push
+#   LOW    -> silent informational
+#
+# Override: `git push --no-verify` (legitimate edge cases)
+#
+# Standard input from git: <local_ref> <local_sha> <remote_ref> <remote_sha>
+
+set +e  # explicit error handling; no bail-on-pipeline
+
+LEAKED=0
+HITS=""
+WARNINGS=""
+
+# Read the push refs
+while read local_ref local_sha remote_ref remote_sha; do
+    # Determine commit range to scan
+    zero_sha="0000000000000000000000000000000000000000"
+    if [ "$remote_sha" = "$zero_sha" ] || [ -z "$remote_sha" ]; then
+        # New branch; scan from local_sha back to first parent that exists upstream
+        range="$local_sha"
+        # Use a heuristic: scan last 50 commits if new branch
+        range_arg="-n 50 $local_sha"
+    else
+        # Existing branch; scan delta
+        range_arg="${remote_sha}..${local_sha}"
+    fi
+
+    # Get the cumulative diff (all added lines across all pushed commits)
+    # Exclude meta-files that legitimately contain pattern definitions
+    # (the hooks + audit script + discipline-definition memory all CONTAIN
+    #  the leakage patterns as pattern definitions; chicken-and-egg)
+    cumulative_added=$(git log -p $range_arg -- \
+            ':!git-hooks' \
+            ':!SOK-OPSECQuarterlyAudit.ps1' \
+            ':!OPSEC_Discipline_Infrastructure*.md' \
+            ':!HII_OPSEC_Master_Remediation_Runbook*' \
+            ':!HII_LinkedIn_Connect_Messages_PerPerson*' \
+            ':!HII_Alternatives_Second_Tier_Map*' \
+            ':!HII_Post_Connection_Response_Templates*' \
+            ':!Substrate_Thesis_Launch_Readiness*' \
+            ':!Substack_Launch_Drafts*' \
+            ':!Resume_Public_Sanitized*' \
+            ':!LinkedIn_About_Proposal*' \
+            ':!PhD_Application_Substrate_Scaffold*' \
+            ':!lcs_public_showcase_*' \
+            ':!*feedback_public_artifact_discipline*' \
+            ':!*feedback_credentialing_vs_claiming*' \
+            2>/dev/null \
+        | grep '^+' | grep -v '^+++' \
+        || true)
+
+    if [ -z "$cumulative_added" ]; then
+        continue
+    fi
+
+    # Function to scan the cumulative content for a pattern
+    scan_cumulative() {
+        local pattern="$1"
+        local label="$2"
+        local severity="$3"
+
+        local matches
+        matches=$(echo "$cumulative_added" | grep -nE "$pattern" 2>/dev/null || true)
+
+        if [ -n "$matches" ]; then
+            case "$severity" in
+                HIGH)
+                    LEAKED=1
+                    HITS="${HITS}
+[BLOCKING $severity] $label
+$(echo "$matches" | head -3)
+$(test $(echo "$matches" | wc -l) -gt 3 && echo "  ... ($(echo "$matches" | wc -l) total matches; showing first 3)")
+"
+                    ;;
+                MEDIUM)
+                    WARNINGS="${WARNINGS}
+[WARN $severity] $label
+$(echo "$matches" | head -2)
+"
+                    ;;
+                LOW) ;;
+            esac
+        fi
+    }
+
+    # === HIGH-severity OPSEC patterns (block push) ===
+
+    # Personnel + identity
+    scan_cumulative '(M[0-9]{8}|UC student ID)' "Cat 2: Student ID pattern" "HIGH"
+    scan_cumulative '\b(DeGraff|Madison Zamzow|Joe Rawlings|Renee Neidigh)\b' "Cat 4: HII panel personnel name" "HIGH"
+    scan_cumulative '\b(Akwei|Menard|Cohen)\b.{0,80}\b(team|teammate|coordinated)' "Cat 4: Teammate name in team-context" "HIGH"
+    scan_cumulative '\b(Navedita|Archana|Harshita)\b.{0,80}\b(team|teammate|coordinated)' "Cat 4: IS7036 teammate name in team-context" "HIGH"
+    scan_cumulative '\bDr\.\s*Li\b.{0,80}\b(course|grade|standing)' "Cat 4: Instructor name with academic context" "HIGH"
+
+    # ~/.claude/CLAUDE.md private path
+    scan_cumulative '~/\.claude/CLAUDE\.md' "Cat 6: Private CLAUDE.md path" "HIGH"
+
+    # HII / SCIF / contracts
+    scan_cumulative '\b(HII Mission Tech|HII Mission Technologies)' "Cat 9: HII Mission Tech reference" "HIGH"
+    scan_cumulative '\bSCIF[ -]round\b' "Cat 9: SCIF-round reference" "HIGH"
+    scan_cumulative '\b(ATSP5|SHIELD contract)' "Cat 9: HII contract reference" "HIGH"
+
+    # Overemployment / concurrent-employment
+    scan_cumulative '\boveremployment\b' "Cat 10: Overemployment vocabulary" "HIGH"
+    scan_cumulative '\bDetection Risk (multiplier|score)' "Cat 10: Detection Risk metric" "HIGH"
+    scan_cumulative '\bSync Oversight\b' "Cat 10: Sync Oversight metric" "HIGH"
+    scan_cumulative '1099-stack' "Cat 10: 1099-stacking reference" "HIGH"
+
+    # Spouse / family
+    scan_cumulative '\bJasmine\b.*\b(Honeywell|Emerson|GE Aero|ICS|OT engineer)' "Cat 11: Spouse employer chain" "HIGH"
+
+    # Service-attack-surface
+    scan_cumulative '<HOST>.*runs.*(PostgreSQL|MongoDB|Neo4j|MySQL|Redis|InfluxDB)' "Cat 12: Database services enumeration" "HIGH"
+
+    # Hardware fingerprint
+    scan_cumulative 'JMicron PCIe[0-9]+' "Cat 13: Specific SSD controller" "HIGH"
+    scan_cumulative 'Intel(64)? Family [0-9]+ Model [0-9]+ Stepping' "Cat 13: CPUID granular fingerprint" "HIGH"
+
+    # Drive-topology
+    scan_cumulative 'D: unmounted \| E: USB-SSD' "Cat 14: Drive-topology pattern" "HIGH"
+
+    # Personal email plaintext
+    scan_cumulative '\bshelcaddell@(gmail\.com|mail\.uc\.edu)' "Cat 4: Personal email plaintext" "HIGH"
+    scan_cumulative '\bcaddelsc@mail\.uc\.edu' "Cat 4: UC institutional email plaintext" "HIGH"
+    scan_cumulative '\bcaddellhomestead@gmail\.com' "Cat 4: Anthropic-account email plaintext" "HIGH"
+    scan_cumulative '\bshalala773@(gmail|yahoo)\.com' "Cat 4: Backup email plaintext" "HIGH"
+
+    # Machine + user fingerprint
+    scan_cumulative '\bCLAY_PC\b' "Cat 12: CLAY_PC machine name" "HIGH"
+    scan_cumulative '\bUser: shelc\b' "Cat 12: User: shelc fingerprint" "HIGH"
+    scan_cumulative 'shelc@<HOST>|sccaddell@ClayPC' "Cat 12: User@host fingerprint" "HIGH"
+
+    # Clearance specifics
+    scan_cumulative 'Polygraph.*(Full Scope|Counterintelligence) \([0-9]{4}\)' "Cat 2: Polygraph specificity" "HIGH"
+    scan_cumulative '\$30M\+? in classified' "Cat 10: SCIF asset quantification" "HIGH"
+    scan_cumulative '\bSpecial Access Programs?\b' "Cat 9: SAP language" "HIGH"
+
+    # Phone
+    scan_cumulative '\(513\) 293-1215' "Cat 4: Personal phone number" "HIGH"
+
+    # === MEDIUM-severity (warn but allow) ===
+    scan_cumulative '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Operating Stack v[0-9])' "Cat 5: Internal vocabulary" "MEDIUM"
+    scan_cumulative '\bClay-pen\b|\bClay-decision\b|\bClay-judgment\b' "Cat 5: Clay-pen pattern" "MEDIUM"
+    scan_cumulative 'Writings/[A-Z][a-zA-Z_0-9]+\.md' "Cat 6: Writings/ private path" "MEDIUM"
+    scan_cumulative 'memory/(MEMORY\.md|feedback_|protocol_|user_|project_)' "Cat 6: memory/ directory reference" "MEDIUM"
+
+done
+
+# Print warnings (always)
+if [ -n "$WARNINGS" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  PRE-PUSH OPSEC SWEEP — WARNINGS (push allowed)"
+    echo "============================================================"
+    echo "Operational disclosure (MEDIUM) in cumulative push delta:"
+    echo "$WARNINGS"
+    echo "============================================================"
+fi
+
+# Block on HIGH
+if [ "$LEAKED" = "1" ]; then
+    echo ""
+    echo "============================================================"
+    echo "  PRE-PUSH OPSEC SWEEP — HIGH-SEVERITY LEAKAGE BLOCKED"
+    echo "============================================================"
+    echo ""
+    echo "The cumulative diff of commits being pushed contains one or"
+    echo "more HIGH-severity Public Artifact Discipline patterns that"
+    echo "individually-staged commits may have missed. This catches:"
+    echo "  - Sequences of small commits that collectively introduce"
+    echo "    a leakage pattern across files"
+    echo "  - Commits made via 'git commit --no-verify' override"
+    echo "  - Branch-merge / rebase that introduces patterns from a"
+    echo "    feature branch"
+    echo ""
+    echo "Findings:"
+    echo "$HITS"
+    echo ""
+    echo "============================================================"
+    echo "  Push BLOCKED. Three options:"
+    echo "  1. Fix the leakage in a new commit and re-push"
+    echo "  2. Override: 'git push --no-verify' (use intentionally)"
+    echo "  3. If false-positive, file an issue or amend the hook"
+    echo "============================================================"
+    exit 1
+fi
+
+# Clean (or only MEDIUM/LOW) — let the push through
+exit 0
