@@ -56,20 +56,20 @@ $Patterns = @(
     @{ Pattern = '\bSCIF[ -]round\b';                                    Label = 'Cat 9: SCIF-round reference';              Severity = 'HIGH' }
     @{ Pattern = '\b(ATSP5|SHIELD contract)\b';                          Label = 'Cat 9: HII contract reference';            Severity = 'HIGH' }
     @{ Pattern = '\b(DeGraff|Madison Zamzow|Joe Rawlings|Renee Neidigh)\b'; Label = 'Cat 4: HII panel personnel name';       Severity = 'HIGH' }
-    @{ Pattern = '\b(Akwei|Menard|Cohen)\b';                             Label = 'Cat 4: IT7021 teammate name';              Severity = 'MEDIUM' }
-    @{ Pattern = '\b(Navedita|Archana|Harshita)\b';                      Label = 'Cat 4: IS7036 teammate name';              Severity = 'MEDIUM' }
-    @{ Pattern = '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Operating Stack v[0-9])\b'; Label = 'Cat 5: Internal vocabulary'; Severity = 'HIGH' }
+    @{ Pattern = '\b(Akwei|Menard|Cohen)\b.{0,80}\b(team|teammate|coordinated|peer|class|project|paper|submitted)';  Label = 'Cat 4: IT7021 teammate name (in team-context)';  Severity = 'HIGH' }
+    @{ Pattern = '\b(Navedita|Archana|Harshita)\b.{0,80}\b(team|teammate|coordinated|peer|class|project|paper|submitted)'; Label = 'Cat 4: IS7036 teammate name (in team-context)'; Severity = 'HIGH' }
+    @{ Pattern = '\b(ENDEAVOR Loop|Reconcile Protocol|Master Log|Backburner Inventory|Operating Stack v[0-9])\b'; Label = 'Cat 5: Internal vocabulary (operational disclosure)'; Severity = 'MEDIUM' }
     @{ Pattern = '\bClay-pen\b|\bClay-decision\b|\bClay-judgment\b';     Label = 'Cat 5: Clay-pen pattern';                  Severity = 'HIGH' }
     @{ Pattern = '~/\.claude/CLAUDE\.md';                                Label = 'Cat 6: ~/.claude/CLAUDE.md private path';  Severity = 'HIGH' }
-    @{ Pattern = 'Writings/[A-Z][a-zA-Z_0-9]+\.md';                      Label = 'Cat 6: Writings/ private path';            Severity = 'HIGH' }
-    @{ Pattern = 'memory/(MEMORY\.md|feedback_|protocol_|user_|project_)'; Label = 'Cat 6: memory/ directory reference';     Severity = 'HIGH' }
+    @{ Pattern = 'Writings/[A-Z][a-zA-Z_0-9]+\.md';                      Label = 'Cat 6: Writings/ private path';            Severity = 'MEDIUM' }
+    @{ Pattern = 'memory/(MEMORY\.md|feedback_|protocol_|user_|project_)'; Label = 'Cat 6: memory/ directory reference';     Severity = 'MEDIUM' }
     @{ Pattern = 'Master_Log_[0-9]{8}|State_Snapshot_(Current|[0-9])';   Label = 'Cat 6: Master_Log/State_Snapshot reference'; Severity = 'MEDIUM' }
     @{ Pattern = '\boveremployment\b|\bDetection Risk (multiplier|score)\b'; Label = 'Cat 10: Overemployment vocabulary';   Severity = 'HIGH' }
     @{ Pattern = '\bSync Oversight\b|\b1099-stack';                      Label = 'Cat 10: Concurrent-employment vocabulary'; Severity = 'HIGH' }
     @{ Pattern = '\bJasmine\b.*\b(Honeywell|Emerson|GE Aero|ICS|OT engineer)\b'; Label = 'Cat 11: Spouse employer chain'; Severity = 'HIGH' }
     @{ Pattern = '\bJMicron PCIe[0-9]+\b';                               Label = 'Cat 13: Specific SSD controller';          Severity = 'HIGH' }
     @{ Pattern = '\bIntel(64)? Family [0-9]+ Model [0-9]+ Stepping';     Label = 'Cat 13: CPUID granular fingerprint';       Severity = 'HIGH' }
-    @{ Pattern = '\bi7-13700H\b';                                        Label = 'Cat 13: Specific CPU model';               Severity = 'MEDIUM' }
+    @{ Pattern = '\bi7-13700H\b';                                        Label = 'Cat 13: Specific CPU model';               Severity = 'LOW' }
     @{ Pattern = 'D: unmounted \| E: USB-SSD';                           Label = 'Cat 14: Drive-topology pattern';           Severity = 'HIGH' }
     @{ Pattern = '\bCLAY_PC\b';                                          Label = 'Cat 12: CLAY_PC machine name';             Severity = 'HIGH' }
     @{ Pattern = '\bUser: shelc\b';                                      Label = 'Cat 12: User: shelc fingerprint';          Severity = 'HIGH' }
